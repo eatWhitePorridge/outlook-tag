@@ -122,7 +122,13 @@ def fetch_messages(account, page=1, per_page=20, filter_to=None):
     imap.select("INBOX")
 
     if filter_to:
-        status, data = imap.uid("search", None, f'(TO "{filter_to}")')
+        # Outlook IMAP 不支持 TO 搜索含 + 的地址，改用 HEADER To 搜索
+        # 提取 +tag 部分作为关键词，匹配更准确
+        if "+" in filter_to:
+            tag_part = filter_to.split("+", 1)[1].split("@")[0]
+            status, data = imap.uid("search", None, f'(HEADER To "{tag_part}")')
+        else:
+            status, data = imap.uid("search", None, f'(HEADER To "{filter_to}")')
     else:
         status, data = imap.uid("search", None, "ALL")
     if status != "OK":
