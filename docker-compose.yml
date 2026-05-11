@@ -1,0 +1,10 @@
+services:
+  mail:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DB_PATH=/app/data/mail.db
+    restart: unless-stopped

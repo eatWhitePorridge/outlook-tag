@@ -148,4 +148,6 @@ def api_delete_alias(alias_id):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    import os
+    debug = os.environ.get("DEBUG", "0") == "1"
+    app.run(host="0.0.0.0", port=8080, debug=debug)
