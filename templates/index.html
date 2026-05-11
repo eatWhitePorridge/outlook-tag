@@ -26,7 +26,10 @@
                 <div id="aliasSection" class="bg-white rounded-lg shadow p-4 mt-4 hidden">
                     <div class="flex justify-between items-center mb-3">
                         <h2 class="text-sm font-semibold">别名管理</h2>
-                        <button onclick="generateAlias()" class="bg-purple-500 text-white px-2 py-1 rounded text-xs hover:bg-purple-600">生成别名</button>
+                        <div class="flex gap-1">
+                            <button onclick="showAllMail()" class="bg-gray-500 text-white px-2 py-1 rounded text-xs hover:bg-gray-600">全部邮件</button>
+                            <button onclick="generateAlias()" class="bg-purple-500 text-white px-2 py-1 rounded text-xs hover:bg-purple-600">生成别名</button>
+                        </div>
                     </div>
                     <div class="mb-2">
                         <div class="flex gap-1">
@@ -105,6 +108,7 @@
     let editingId = null;
     let currentPage = 1;
     let totalPages = 1;
+    let filterTo = null;
 
     function escapeHtml(str) {
         if (!str) return '';
@@ -133,6 +137,7 @@
     async function selectAccount(id, email) {
         currentAccountId = id;
         currentPage = 1;
+        filterTo = email;
         document.getElementById('mailTitle').textContent = email;
         document.getElementById('refreshBtn').classList.remove('hidden');
         document.getElementById('aliasSection').classList.remove('hidden');
@@ -150,9 +155,10 @@
             return;
         }
         el.innerHTML = aliases.map(a => `
-            <div class="flex items-center justify-between p-1 rounded border text-xs">
-                <span class="truncate flex-1 cursor-pointer hover:text-blue-500" onclick="copyAlias('${a.alias}')" title="点击复制">${a.alias}</span>
-                <button onclick="removeAlias(${a.id})" class="text-gray-400 hover:text-red-500 ml-1">×</button>
+            <div class="flex items-center justify-between p-1 rounded border text-xs ${filterTo === a.alias ? 'border-purple-500 bg-purple-50' : ''}">
+                <span class="truncate flex-1 cursor-pointer hover:text-purple-500" onclick="filterByAlias('${a.alias}')" title="点击查看该别名邮件">${a.alias}</span>
+                <button onclick="event.stopPropagation();copyAlias('${a.alias}')" class="text-gray-400 hover:text-blue-500 ml-1 text-[10px]">复制</button>
+                <button onclick="event.stopPropagation();removeAlias(${a.id})" class="text-gray-400 hover:text-red-500 ml-1">×</button>
             </div>
         `).join('');
     }
@@ -184,10 +190,26 @@
         navigator.clipboard.writeText(alias);
     }
 
+    function filterByAlias(alias) {
+        filterTo = alias;
+        currentPage = 1;
+        document.getElementById('mailTitle').textContent = alias;
+        loadMessages(currentAccountId, 1);
+        loadAliases(currentAccountId);
+    }
+
+    function showAllMail() {
+        filterTo = null;
+        currentPage = 1;
+        document.getElementById('mailTitle').textContent = '全部邮件';
+        loadMessages(currentAccountId, 1);
+        loadAliases(currentAccountId);
+    }
+
     async function loadMessages(id, page) {
         const el = document.getElementById('mailList');
         el.innerHTML = '<p class="text-gray-400 text-center py-8">加载中...</p>';
-        const resp = await fetch(`/api/accounts/${id}/messages?page=${page}&per_page=20`);
+        const resp = await fetch(`/api/accounts/${id}/messages?page=${page}&per_page=20${filterTo ? '&filter_to='+encodeURIComponent(filterTo) : ''}`);
         const data = await resp.json();
         if (data.error) {
             el.innerHTML = `<p class="text-red-500 text-center py-8">${data.error}</p>`;
