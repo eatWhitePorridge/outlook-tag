@@ -299,17 +299,16 @@
     }
 
     async function editAccount(id) {
-        const resp = await fetch('/api/accounts');
-        const accounts = await resp.json();
-        const account = accounts.find(a => a.id === id);
-        if (!account) return;
+        const resp = await fetch(`/api/accounts/${id}`);
+        const account = await resp.json();
+        if (account.error) return;
         editingId = id;
         document.getElementById('modalTitle').textContent = '编辑邮箱';
         document.getElementById('rawInput').value = '';
         document.getElementById('inputEmail').value = account.email || '';
-        document.getElementById('inputPassword').value = '';
-        document.getElementById('inputClientId').value = '';
-        document.getElementById('inputToken').value = '';
+        document.getElementById('inputPassword').value = account.password || '';
+        document.getElementById('inputClientId').value = account.client_id || '';
+        document.getElementById('inputToken').value = account.refresh_token || '';
         document.getElementById('modal').classList.remove('hidden');
     }
 

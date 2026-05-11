@@ -25,6 +25,20 @@ def api_list_accounts():
     return jsonify(list_accounts())
 
 
+@app.route("/api/accounts/<int:account_id>", methods=["GET"])
+def api_get_account_detail(account_id):
+    account = get_account(account_id)
+    if not account:
+        return jsonify({"error": "账号不存在"}), 404
+    return jsonify({
+        "id": account["id"],
+        "email": account["email"],
+        "password": account["password"],
+        "client_id": account["client_id"],
+        "refresh_token": account["refresh_token"],
+    })
+
+
 @app.route("/api/accounts", methods=["POST"])
 def api_create_account():
     data = request.json
