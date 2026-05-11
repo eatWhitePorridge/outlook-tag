@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>邮箱查看</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .code-highlight { background: #fef08a; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto p-4 max-w-3xl">
+        <h1 class="text-2xl font-bold mb-4">邮箱查看</h1>
+
+        <!-- 搜索栏 -->
+        <div id="searchBox" class="bg-white rounded-lg shadow p-6 mb-4">
+            <div class="flex gap-2">
+                <input id="emailInput" type="email" placeholder="输入邮箱地址..." class="flex-1 border rounded px-4 py-2" onkeydown="if(event.key==='Enter')lookupEmail()">
+                <button onclick="lookupEmail()" class="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600">查看邮件</button>
+            </div>
+            <p id="searchError" class="text-red-500 text-sm mt-2 hidden"></p>
+        </div>
+
+        <!-- 邮件列表 -->
+        <div id="mailSection" class="hidden">
+            <div class="bg-white rounded-lg shadow p-4">
+                <div class="flex justify-between items-center mb-3">
+                    <h2 class="text-lg font-semibold" id="mailTitle"></h2>
+                    <div class="flex gap-2">
+                        <button onclick="refreshMail()" class="bg-green-500 text-white px-3 py-1 rounded text-sm hover:bg-green-600">刷新</button>
+                        <button onclick="logout()" class="border px-3 py-1 rounded text-sm hover:bg-gray-50">换邮箱</button>
+                    </div>
+                </div>
+                <div id="mailList" class="space-y-2"></div>
+                <div id="pagination" class="flex items-center justify-between mt-4 hidden">
+                    <span id="pageInfo" class="text-sm text-gray-500"></span>
+                    <div class="flex gap-2">
+                        <button onclick="prevPage()" id="prevBtn" class="px-3 py-1 border rounded text-sm hover:bg-gray-50 disabled:opacity-50" disabled>上一页</button>
+                        <button onclick="nextPage()" id="nextBtn" class="px-3 py-1 border rounded text-sm hover:bg-gray-50 disabled:opacity-50" disabled>下一页</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 邮件详情弹窗 -->
+    <div id="detailModal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg w-full max-w-3xl mx-4 max-h-[90vh] flex flex-col">
+            <div class="p-4 border-b flex justify-between items-start">
+                <div class="flex-1 min-w-0">
+                    <h3 id="detailSubject" class="text-lg font-semibold truncate"></h3>
+                    <div class="text-sm text-gray-500 mt-1">
+                        <span id="detailFrom"></span> → <span id="detailTo"></span>
+                    </div>
+                    <div class="text-xs text-gray-400 mt-1" id="detailDate"></div>
+                    <div id="detailCodes" class="mt-2"></div>
+                </div>
+                <button onclick="closeDetail()" class="text-gray-400 hover:text-gray-600 text-2xl ml-4">&times;</button>
+            </div>
+            <div id="detailBody" class="p-4 overflow-auto flex-1"></div>
+        </div>
+    </div>
+<!-- PLACEHOLDER_SCRIPT -->
+    <script>
+    let currentAccountId = null;
+    let currentPage = 1;
+    let totalPages = 1;
+    let filterTo = null;
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    async function lookupEmail() {
+        const email = document.getElementById('emailInput').value.trim();
+        if (!email) return;
+        const errEl = document.getElementById('searchError');
+        errEl.classList.add('hidden');
+
+        const resp = await fetch('/api/lookup', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email}) });
+        const data = await resp.json();
+        if (data.error) {
+            errEl.textContent = data.error;
+            errEl.classList.remove('hidden');
+            return;
+        }
+        currentAccountId = data.id;
+        filterTo = data.filter_to;
+        currentPage = 1;
+        document.getElementById('mailTitle').textContent = data.display;
+        document.getElementById('searchBox').classList.add('hidden');
+        document.getElementById('mailSection').classList.remove('hidden');
+        loadMessages(1);
+    }
+
+    function logout() {
+        currentAccountId = null;
+        filterTo = null;
+        document.getElementById('searchBox').classList.remove('hidden');
+        document.getElementById('mailSection').classList.add('hidden');
+        document.getElementById('emailInput').value = '';
+    }
+
+    async function loadMessages(page) {
+        const el = document.getElementById('mailList');
+        el.innerHTML = '<p class="text-gray-400 text-center py-8">加载中...</p>';
+        const resp = await fetch(`/api/accounts/${currentAccountId}/messages?page=${page}&per_page=20${filterTo ? '&filter_to='+encodeURIComponent(filterTo) : ''}`);
+        const data = await resp.json();
+        if (data.error) {
+            el.innerHTML = `<p class="text-red-500 text-center py-8">${data.error}</p>`;
+            document.getElementById('pagination').classList.add('hidden');
+            return;
+        }
+        if (!data.messages.length) {
+            el.innerHTML = '<p class="text-gray-400 text-center py-8">没有邮件</p>';
+            document.getElementById('pagination').classList.add('hidden');
+            return;
+        }
+        totalPages = data.total_pages;
+        currentPage = data.page;
+        el.innerHTML = data.messages.map(m => {
+            const codesHtml = m.codes.length ? `<div class="mt-1">${m.codes.map(c => `<span class="code-highlight">${c}</span>`).join(' ')}</div>` : '';
+            const preview = escapeHtml(m.body_preview);
+            return `
+            <div class="p-3 border rounded hover:bg-gray-50 cursor-pointer" onclick="viewMessage('${m.uid}')">
+                <div class="flex justify-between items-start">
+                    <div class="font-medium text-sm truncate flex-1">${escapeHtml(m.subject) || '(无主题)'}</div>
+                    ${m.codes.length ? '<span class="text-xs bg-yellow-200 px-2 py-0.5 rounded ml-2 whitespace-nowrap">验证码</span>' : ''}
+                </div>
+                <div class="text-xs text-gray-500 mt-1">${escapeHtml(m.from)}</div>
+                <div class="text-xs text-gray-400">${m.date}</div>
+                ${codesHtml}
+                <div class="text-xs text-gray-600 mt-1 line-clamp-2">${preview}</div>
+            </div>`;
+        }).join('');
+
+        const pagination = document.getElementById('pagination');
+        pagination.classList.remove('hidden');
+        document.getElementById('pageInfo').textContent = `第 ${currentPage} / ${totalPages} 页（共 ${data.total} 封）`;
+        document.getElementById('prevBtn').disabled = currentPage <= 1;
+        document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+    }
+
+    function prevPage() { if (currentPage > 1) loadMessages(currentPage - 1); }
+    function nextPage() { if (currentPage < totalPages) loadMessages(currentPage + 1); }
+    function refreshMail() { loadMessages(currentPage); }
+
+    async function viewMessage(uid) {
+        document.getElementById('detailModal').classList.remove('hidden');
+        document.getElementById('detailBody').innerHTML = '<p class="text-gray-400 text-center py-8">加载中...</p>';
+        document.getElementById('detailSubject').textContent = '';
+        document.getElementById('detailFrom').textContent = '';
+        document.getElementById('detailTo').textContent = '';
+        document.getElementById('detailDate').textContent = '';
+        document.getElementById('detailCodes').innerHTML = '';
+
+        const resp = await fetch(`/api/accounts/${currentAccountId}/messages/${uid}`);
+        const data = await resp.json();
+        if (data.error) {
+            document.getElementById('detailBody').innerHTML = `<p class="text-red-500">${data.error}</p>`;
+            return;
+        }
+        document.getElementById('detailSubject').textContent = data.subject || '(无主题)';
+        document.getElementById('detailFrom').textContent = data.from;
+        document.getElementById('detailTo').textContent = data.to;
+        document.getElementById('detailDate').textContent = data.date;
+        if (data.codes.length) {
+            document.getElementById('detailCodes').innerHTML = data.codes.map(c => `<span class="code-highlight">${c}</span>`).join(' ');
+        }
+        if (data.is_html) {
+            const iframe = document.createElement('iframe');
+            iframe.classList.add('w-full', 'border-0');
+            iframe.style.height = '500px';
+            iframe.srcdoc = data.body;
+            document.getElementById('detailBody').innerHTML = '';
+            document.getElementById('detailBody').appendChild(iframe);
+        } else {
+            document.getElementById('detailBody').innerHTML = `<pre class="whitespace-pre-wrap text-sm">${escapeHtml(data.body)}</pre>`;
+        }
+    }
+
+    function closeDetail() { document.getElementById('detailModal').classList.add('hidden'); }
+    </script>
+</body>
+</html>
