@@ -48,10 +48,15 @@ def api_create_account():
         if len(parts) == 4:
             email_addr = parts[0]
             password = parts[1]
-            # 用户格式: 邮箱----密码----refresh_token----client_id
-            # 第3段是长token(refresh_token)，第4段是UUID(client_id)
-            refresh_token = parts[2]
-            client_id = parts[3]
+            # 自动判断: UUID 格式的是 client_id，长字符串是 refresh_token
+            field3, field4 = parts[2], parts[3]
+            import re as _re
+            if _re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', field3):
+                client_id, refresh_token = field3, field4
+            elif _re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', field4):
+                client_id, refresh_token = field4, field3
+            else:
+                client_id, refresh_token = field3, field4
         else:
             return jsonify({"error": "格式错误，需要: 邮箱----密码----client_id----refresh_token"}), 400
     else:
