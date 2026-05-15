@@ -29,6 +29,7 @@ def get_access_token(account):
         "client_id": account["client_id"],
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
+        "scope": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
     }
     resp = requests.post(TOKEN_URL, data=data)
     if resp.status_code != 200:
