@@ -1,13 +1,29 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, session, redirect
 from db import (init_db, list_accounts, get_account, get_account_by_email,
                 create_account, update_account, delete_account,
                 list_aliases, create_alias, delete_alias, get_account_by_alias)
 from mail_service import fetch_messages, fetch_single_message
 import random
 import string
+import os
+from functools import wraps
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "outlook-tag-secret-key-2026")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "17605209236qQ.")
+
 init_db()
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("admin"):
+            if request.is_json:
+                return jsonify({"error": "未登录"}), 401
+            return redirect("/admin/login")
+        return f(*args, **kwargs)
+    return decorated
 
 
 @app.route("/")
@@ -16,16 +32,37 @@ def user_index():
 
 
 @app.route("/admin")
+@admin_required
 def admin_index():
     return render_template("index.html")
 
 
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if request.method == "POST":
+        data = request.form if request.form else request.json
+        pwd = data.get("password", "")
+        if pwd == ADMIN_PASSWORD:
+            session["admin"] = True
+            return redirect("/admin")
+        return render_template("login.html", error="密码错误")
+    return render_template("login.html", error=None)
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.pop("admin", None)
+    return redirect("/admin/login")
+
+
 @app.route("/api/accounts", methods=["GET"])
+@admin_required
 def api_list_accounts():
     return jsonify(list_accounts())
 
 
 @app.route("/api/accounts/<int:account_id>", methods=["GET"])
+@admin_required
 def api_get_account_detail(account_id):
     account = get_account(account_id)
     if not account:
@@ -40,6 +77,7 @@ def api_get_account_detail(account_id):
 
 
 @app.route("/api/accounts", methods=["POST"])
+@admin_required
 def api_create_account():
     data = request.json
     raw = data.get("raw", "").strip()
@@ -73,6 +111,7 @@ def api_create_account():
 
 
 @app.route("/api/accounts/<int:account_id>", methods=["PUT"])
+@admin_required
 def api_update_account(account_id):
     data = request.json
     fields = {}
@@ -86,6 +125,7 @@ def api_update_account(account_id):
 
 
 @app.route("/api/accounts/<int:account_id>", methods=["DELETE"])
+@admin_required
 def api_delete_account(account_id):
     delete_account(account_id)
     return jsonify({"ok": True})
@@ -138,11 +178,13 @@ def api_lookup():
 
 
 @app.route("/api/accounts/<int:account_id>/aliases", methods=["GET"])
+@admin_required
 def api_list_aliases(account_id):
     return jsonify(list_aliases(account_id))
 
 
 @app.route("/api/accounts/<int:account_id>/aliases", methods=["POST"])
+@admin_required
 def api_create_alias(account_id):
     account = get_account(account_id)
     if not account:
@@ -161,6 +203,7 @@ def api_create_alias(account_id):
 
 
 @app.route("/api/aliases/<int:alias_id>", methods=["DELETE"])
+@admin_required
 def api_delete_alias(alias_id):
     delete_alias(alias_id)
     return jsonify({"ok": True})
