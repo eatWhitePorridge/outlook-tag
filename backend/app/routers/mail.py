@@ -22,6 +22,30 @@ def _persist_refresh(account_id: int, account: dict, new_refresh: str | None) ->
         db.update_account(account_id, refresh_token=new_refresh)
 
 
+def _guard_alias(access: dict, headers: dict) -> None:
+    """
+    public token 绑定的是 {account_id, filter_to}。按 UID 直接取信时，
+    account_id 相符不代表这封信属于该别名 —— UID 是小整数，可以直接枚举。
+    这里比对收件地址，把别名边界补上。
+    """
+    if access.get("role") != "public":
+        return
+    needle = (access.get("filter_to") or "").strip().lower()
+    if not needle:
+        return
+    haystack = " ".join(
+        str(headers.get(k) or "") for k in ("to", "cc", "bcc", "delivered_to", "subject")
+    ).lower()
+    if needle in haystack:
+        return
+    # Outlook 有时把别名写成不含 + 号的形式，退一步只比对 tag 片段
+    if "+" in needle:
+        tag = needle.split("+", 1)[1].split("@")[0]
+        if tag and tag in haystack:
+            return
+    raise HTTPException(403, "该邮件不属于此别名")
+
+
 @router.post("/lookup")
 def lookup(body: LookupBody):
     email_addr = body.email.strip()
@@ -86,6 +110,7 @@ def message_detail(
     if "error" in result:
         code = 404 if result.get("code") == "not_found" else 500
         raise HTTPException(code, result["error"])
+    _guard_alias(access, result)
     return result
 
 
@@ -96,8 +121,14 @@ def download_attachment(
     index: int,
     access: dict = Depends(require_admin_or_public_account),
 ):
-    """附件下载。走与读信同一套鉴权，public token 同样只能取到自己账号的邮件。"""
+    """附件下载。走与读信同一套鉴权，并同样校验别名边界。"""
     account = _load_secrets(account_id)
+    if access.get("role") == "public":
+        # 附件属于哪封信，只能先取回这封信的头部再判断
+        meta, _ = mail_service.fetch_single_message(account, uid)
+        if "error" in meta:
+            raise HTTPException(404, "邮件不存在")
+        _guard_alias(access, meta)
     att, err = mail_service.fetch_attachment(account, uid, index)
     if err or not att:
         raise HTTPException(404 if err == "附件不存在" else 500, err or "附件读取失败")

@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -64,16 +64,27 @@ _dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 if not _dist.is_dir():
     _dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if _dist.is_dir():
+    _dist_root = _dist.resolve()
     assets = _dist / "assets"
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):
-        target = _dist / full_path
-        if full_path and target.is_file():
-            return FileResponse(target)
-        index = _dist / "index.html"
+        # 未匹配到任何路由的 /api/* 应该是 JSON 404，
+        # 否则前端 request() 会把 index.html 当成成功响应返回
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="接口不存在")
+
+        # 路径穿越防护：
+        #   Starlette 不会规范化 `..`，且 `Path("/a") / "/etc/passwd"` == `/etc/passwd`
+        #   （绝对路径会整个替换掉基准目录）。必须 resolve 后校验仍在 dist 内。
+        if full_path:
+            target = (_dist_root / full_path).resolve()
+            if target.is_file() and target.is_relative_to(_dist_root):
+                return FileResponse(target)
+
+        index = _dist_root / "index.html"
         if index.is_file():
             return FileResponse(index)
         return {"detail": "frontend not built"}

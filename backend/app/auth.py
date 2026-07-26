@@ -25,7 +25,9 @@ def verify_admin_password(password: str, settings: Settings | None = None) -> bo
     settings = settings or get_settings()
     if not settings.admin_password:
         raise HTTPException(status_code=500, detail="ADMIN_PASSWORD 未配置")
-    return hmac.compare_digest(password, settings.admin_password)
+    # 必须先 encode：compare_digest 对含非 ASCII 的 str 直接抛 TypeError，
+    # 中文密码会让登录接口无论对错都 500
+    return hmac.compare_digest(password.encode("utf-8"), settings.admin_password.encode("utf-8"))
 
 
 def set_admin_session(response: Response, settings: Settings | None = None) -> None:
