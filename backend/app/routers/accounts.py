@@ -1,0 +1,206 @@
+import re
+import random
+import string
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app import db
+from app.auth import mask_secret, require_admin
+from app.schemas import AccountCreate, AccountUpdate, AliasCreate, BatchImportBody
+from app.services import mail as mail_service
+from app.services.probe_job import probe_one_account, run_probe_batch
+
+router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.I,
+)
+
+
+def parse_raw_line(raw: str) -> tuple[str, str, str, str]:
+    parts = [p.strip() for p in raw.strip().split("----")]
+    if len(parts) != 4:
+        raise ValueError("格式错误，需要: 邮箱----密码----client_id----refresh_token")
+    email_addr, password, field3, field4 = parts
+    if UUID_RE.match(field3):
+        client_id, refresh_token = field3, field4
+    elif UUID_RE.match(field4):
+        client_id, refresh_token = field4, field3
+    else:
+        client_id, refresh_token = field3, field4
+    if not email_addr or not client_id or not refresh_token:
+        raise ValueError("邮箱、client_id、refresh_token 不能为空")
+    return email_addr, password, client_id, refresh_token
+
+
+def _maybe_refresh(account_id: int, account: dict, new_refresh: str | None) -> None:
+    if new_refresh and new_refresh != account.get("refresh_token"):
+        db.update_account(account_id, refresh_token=new_refresh)
+
+
+@router.get("/stats")
+def stats(_: dict = Depends(require_admin)):
+    return db.account_stats()
+
+
+@router.post("/batch")
+def batch_import(body: BatchImportBody, _: dict = Depends(require_admin)):
+    lines = [ln.strip() for ln in body.lines.splitlines() if ln.strip()]
+    results = []
+    ok = 0
+    for ln in lines:
+        try:
+            email_addr, password, client_id, refresh_token = parse_raw_line(ln)
+            account_id = db.create_account(email_addr, password, client_id, refresh_token)
+            results.append({"email": email_addr, "ok": True, "id": account_id})
+            ok += 1
+        except Exception as e:
+            results.append({"email": ln.split("----")[0] if "----" in ln else ln[:40], "ok": False, "error": str(e)})
+    db.add_ops_log("batch_import", f"{ok}/{len(lines)}", f"success={ok} total={len(lines)}")
+    return {"ok": ok, "total": len(lines), "results": results}
+
+
+@router.post("/probe-batch")
+def probe_batch(
+    limit: int = Query(40, ge=1, le=200),
+    only_unknown: bool = False,
+    _: dict = Depends(require_admin),
+):
+    cfg = db.get_settings_map(["probe_workers"])
+    workers = int(cfg.get("probe_workers") or 6)
+    return run_probe_batch(
+        limit=limit,
+        workers=workers,
+        only_unknown=only_unknown,
+        source="manual",
+    )
+
+
+@router.delete("/aliases/{alias_id}")
+def delete_alias(alias_id: int, _: dict = Depends(require_admin)):
+    db.delete_alias(alias_id)
+    db.add_ops_log("delete_alias", str(alias_id))
+    return {"ok": True}
+
+
+@router.get("")
+def list_accounts(
+    q: str | None = None,
+    status: str | None = Query("all"),
+    page: int = 1,
+    per_page: int = 50,
+    _: dict = Depends(require_admin),
+):
+    return db.list_accounts(q=q, status=status, page=page, per_page=per_page)
+
+
+@router.post("")
+def create_account(body: AccountCreate, _: dict = Depends(require_admin)):
+    try:
+        if body.raw and body.raw.strip():
+            email_addr, password, client_id, refresh_token = parse_raw_line(body.raw)
+            note = body.note
+        else:
+            email_addr = body.email.strip()
+            password = body.password
+            client_id = body.client_id.strip()
+            refresh_token = body.refresh_token.strip()
+            note = body.note
+            if not email_addr or not client_id or not refresh_token:
+                raise ValueError("邮箱、client_id、refresh_token 不能为空")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    account_id = db.create_account(email_addr, password, client_id, refresh_token, note)
+    db.add_ops_log("create_account", email_addr, f"id={account_id}")
+    return {"id": account_id, "email": email_addr}
+
+
+@router.get("/{account_id}")
+def get_account(account_id: int, _: dict = Depends(require_admin)):
+    account = db.get_account(account_id, secrets=True)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    account["client_id_masked"] = mask_secret(account.pop("client_id", ""))
+    account["refresh_token_masked"] = mask_secret(account.pop("refresh_token", ""))
+    account["password"] = account.get("password") or ""
+    return account
+
+
+@router.get("/{account_id}/secrets")
+def get_account_secrets(account_id: int, _: dict = Depends(require_admin)):
+    account = db.get_account(account_id, secrets=True)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    return {
+        "id": account["id"],
+        "email": account["email"],
+        "password": account.get("password") or "",
+        "client_id": account["client_id"],
+        "refresh_token": account["refresh_token"],
+        "note": account.get("note") or "",
+    }
+
+
+@router.put("/{account_id}")
+def update_account(account_id: int, body: AccountUpdate, _: dict = Depends(require_admin)):
+    if not db.get_account(account_id):
+        raise HTTPException(404, "账号不存在")
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(400, "没有要更新的字段")
+    db.update_account(account_id, **fields)
+    db.add_ops_log("update_account", str(account_id), ",".join(fields.keys()))
+    return {"ok": True}
+
+
+@router.delete("/{account_id}")
+def delete_account(account_id: int, _: dict = Depends(require_admin)):
+    account = db.get_account(account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    db.delete_account(account_id)
+    db.add_ops_log("delete_account", account["email"], f"id={account_id}")
+    return {"ok": True}
+
+
+@router.post("/{account_id}/probe")
+def probe_one(account_id: int, _: dict = Depends(require_admin)):
+    account = db.get_account(account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    result = probe_one_account(account_id)
+    db.add_ops_log(
+        "probe",
+        account["email"],
+        "ok" if result["ok"] else (result.get("error") or "")[:200],
+    )
+    return {
+        "ok": result["ok"],
+        "error": result.get("error", ""),
+        "status": "ok" if result["ok"] else "error",
+    }
+
+
+@router.get("/{account_id}/aliases")
+def list_aliases(account_id: int, _: dict = Depends(require_admin)):
+    if not db.get_account(account_id):
+        raise HTTPException(404, "账号不存在")
+    return db.list_aliases(account_id)
+
+
+@router.post("/{account_id}/aliases")
+def create_alias(account_id: int, body: AliasCreate, _: dict = Depends(require_admin)):
+    account = db.get_account(account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    tag = body.tag.strip() or "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    local, domain = account["email"].split("@", 1)
+    alias = f"{local}+{tag}@{domain}"
+    try:
+        alias_id = db.create_alias(account_id, alias, tag)
+    except Exception:
+        raise HTTPException(400, "别名已存在")
+    db.add_ops_log("create_alias", alias, f"account={account_id}")
+    return {"id": alias_id, "alias": alias, "tag": tag}

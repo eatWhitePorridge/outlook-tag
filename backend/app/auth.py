@@ -1,0 +1,134 @@
+import hashlib
+import hmac
+import secrets
+import time
+from typing import Annotated
+
+from fastapi import Cookie, Depends, Header, HTTPException, Response
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+from app.config import Settings, get_settings
+
+ADMIN_COOKIE = "mail_admin"
+PUBLIC_HEADER = "X-Public-Token"
+
+
+def _serializer(settings: Settings) -> URLSafeTimedSerializer:
+    if not settings.secret_key:
+        raise HTTPException(status_code=500, detail="SECRET_KEY 未配置")
+    return URLSafeTimedSerializer(settings.secret_key, salt="mail-session")
+
+
+def verify_admin_password(password: str, settings: Settings | None = None) -> bool:
+    settings = settings or get_settings()
+    if not settings.admin_password:
+        raise HTTPException(status_code=500, detail="ADMIN_PASSWORD 未配置")
+    return hmac.compare_digest(password, settings.admin_password)
+
+
+def set_admin_session(response: Response, settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
+    token = _serializer(settings).dumps({"role": "admin", "n": secrets.token_hex(8)})
+    response.set_cookie(
+        ADMIN_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        max_age=settings.session_ttl,
+        path="/",
+    )
+
+
+def clear_admin_session(response: Response) -> None:
+    settings = get_settings()
+    response.delete_cookie(
+        ADMIN_COOKIE,
+        path="/",
+        secure=settings.cookie_secure,
+        samesite="lax",
+    )
+
+
+def require_admin(
+    mail_admin: Annotated[str | None, Cookie(alias=ADMIN_COOKIE)] = None,
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    if not mail_admin:
+        raise HTTPException(status_code=401, detail="未登录")
+    try:
+        data = _serializer(settings).loads(mail_admin, max_age=settings.session_ttl)
+    except SignatureExpired:
+        raise HTTPException(status_code=401, detail="登录已过期")
+    except BadSignature:
+        raise HTTPException(status_code=401, detail="无效会话")
+    if data.get("role") != "admin":
+        raise HTTPException(status_code=401, detail="无效会话")
+    return data
+
+
+def issue_public_token(account_id: int, filter_to: str, settings: Settings | None = None) -> str:
+    settings = settings or get_settings()
+    return _serializer(settings).dumps(
+        {
+            "role": "public",
+            "account_id": account_id,
+            "filter_to": filter_to,
+            "n": secrets.token_hex(6),
+        }
+    )
+
+
+def parse_public_token(token: str, settings: Settings | None = None) -> dict:
+    settings = settings or get_settings()
+    try:
+        data = _serializer(settings).loads(token, max_age=settings.public_token_ttl)
+    except SignatureExpired:
+        raise HTTPException(status_code=401, detail="访问已过期，请重新查询")
+    except BadSignature:
+        raise HTTPException(status_code=401, detail="无效访问令牌")
+    if data.get("role") != "public":
+        raise HTTPException(status_code=401, detail="无效访问令牌")
+    return data
+
+
+def require_public(
+    x_public_token: Annotated[str | None, Header(alias=PUBLIC_HEADER)] = None,
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    if not x_public_token:
+        raise HTTPException(status_code=401, detail="缺少访问令牌")
+    return parse_public_token(x_public_token, settings)
+
+
+def require_admin_or_public_account(
+    account_id: int,
+    mail_admin: Annotated[str | None, Cookie(alias=ADMIN_COOKIE)] = None,
+    x_public_token: Annotated[str | None, Header(alias=PUBLIC_HEADER)] = None,
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    if mail_admin:
+        try:
+            data = _serializer(settings).loads(mail_admin, max_age=settings.session_ttl)
+            if data.get("role") == "admin":
+                return {"role": "admin", "account_id": account_id, "filter_to": None}
+        except (SignatureExpired, BadSignature):
+            pass
+    if x_public_token:
+        data = parse_public_token(x_public_token, settings)
+        if int(data["account_id"]) != int(account_id):
+            raise HTTPException(status_code=403, detail="无权访问该邮箱")
+        return data
+    raise HTTPException(status_code=401, detail="未授权")
+
+
+def mask_secret(value: str, keep: int = 6) -> str:
+    if not value:
+        return ""
+    if len(value) <= keep * 2:
+        return "*" * len(value)
+    return f"{value[:keep]}…{value[-keep:]}"
+
+
+def short_hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()[:12]

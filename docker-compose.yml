@@ -1,10 +1,26 @@
 services:
   mail:
     build: .
+    image: mail-workspace:latest
+    container_name: mail-workspace
     ports:
-      - "8080:8080"
+      - "${HOST_PORT:-8080}:8080"
     volumes:
+      # SQLite 与运行数据持久化
       - ./data:/app/data
+    env_file:
+      - .env
     environment:
+      # 容器内固定路径（覆盖 .env 里本地开发用的相对路径）
       - DB_PATH=/app/data/mail.db
+      - SECRET_KEY=${SECRET_KEY}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
