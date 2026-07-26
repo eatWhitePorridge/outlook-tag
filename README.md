@@ -163,6 +163,33 @@ HTTPS 配好后将 `COOKIE_SECURE=true` 并 `docker compose up -d`。
 **`codes_only`（仅显示验证码）**：验证码只能从正文判断，服务端无法预先算出总页数，
 因此该模式改用「上一页 / 下一页 + `has_more`」而非页码，且单次扫描封顶 600 封。
 
+## 取码 API（给自动化脚本）
+
+管理端 **API** 按钮里生成 Key（明文只显示一次）。
+
+```bash
+curl -H "X-API-Key: mk_xxx" \
+  "http://<host>/api/v1/code?email=name%2Btag@outlook.com"
+```
+
+```json
+{"email":"name+tag@outlook.com","code":"674285","codes":["674285"],
+ "subject":"Your temporary ChatGPT verification code","age_seconds":42,"uid":"48"}
+```
+
+| 参数 | 说明 |
+|----|----|
+| `email` | 邮箱或 `+tag` 别名。**`+` 在查询串里会被解成空格** —— 建议写 `%2B`；服务端也做了还原兜底 |
+| `within_minutes` | 只认这个时间窗内到达的邮件，避免拿到上一轮流程的旧码 |
+
+另有 `GET /api/v1/messages?email=&limit=10` 返回原始列表。
+
+- 无码返 404，Key 无效/停用返 401，超限返 429（带 `Retry-After`）
+- **每个 Key 每分钟 60 次**；结果按 `(账号, 别名)` 缓存 **8 秒**。
+  这两层是必要的 —— 取码要拉真实邮件，脚本密集轮询会把 Outlook 打到限流甚至风控账号
+- `+tag` 别名严格隔离：`+tagA` 取不到发给 `+tagB` 的码
+- Key 只存 sha256；只认 `X-API-Key` 请求头，**不支持 `?key=`**（查询串会进访问日志）
+
 ## 安全
 
 - 管理接口需 Cookie 会话

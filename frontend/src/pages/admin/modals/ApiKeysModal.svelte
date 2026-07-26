@@ -147,9 +147,10 @@
     </div>
     <pre class="sample">{sample}</pre>
     <p class="faint small note">
-      支持 <code>+tag</code> 别名，只会返回发到该别名的验证码。
+      支持 <code>+tag</code> 别名，只会返回发到该别名的验证码。查询串里的 <code>+</code>
+      按规范会被解成空格，服务端已做还原，写 <code>%2B</code> 更稳妥。
       可加 <code>&amp;within_minutes=5</code> 只认 5 分钟内到达的邮件，避免拿到上一轮的旧码。
-      限流每个 Key 每分钟 60 次。
+      限流每个 Key 每分钟 60 次；结果缓存 8 秒，密集轮询不会额外打 IMAP。
     </p>
   </div>
 

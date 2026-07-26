@@ -23,22 +23,36 @@ _cache: dict[tuple[int, str], tuple[dict[str, Any], float]] = {}
 _lock = threading.Lock()
 
 
+def _candidates(email: str) -> list[str]:
+    """
+    查询串里的 `+` 会被解码成空格，而这个接口的主力用法正是 `name+tag@`。
+    脚本写 `?email=name+tag@x.com` 时服务端收到的是 `name tag@x.com`，
+    与其让所有调用方都记得写 %2B，不如在这里兜住。
+    邮箱本地部分不允许出现未转义空格，所以这个还原是安全的。
+    """
+    addr = (email or "").strip()
+    if not addr:
+        return []
+    out = [addr]
+    if " " in addr:
+        out.append(addr.replace(" ", "+"))
+    return out
+
+
 def resolve_target(email: str) -> tuple[dict[str, Any] | None, str]:
     """
     邮箱或 +tag 别名 -> (账号, filter_to)。
     解析顺序与 routers/mail.py 的 lookup 保持一致。
     """
-    addr = (email or "").strip()
-    if not addr:
-        return None, ""
-    account = db.get_account_by_email(addr)
-    if account:
-        return account, addr
-    account = db.get_account_by_alias(addr)
-    if account:
-        # 别名边界：必须把 filter_to 带下去，
-        # 否则会读到同一账号下其他别名的验证码
-        return account, addr
+    for addr in _candidates(email):
+        account = db.get_account_by_email(addr)
+        if account:
+            return account, addr
+        account = db.get_account_by_alias(addr)
+        if account:
+            # 别名边界：必须把 filter_to 带下去，
+            # 否则会读到同一账号下其他别名的验证码
+            return account, addr
     return None, ""
 
 
@@ -108,7 +122,8 @@ def latest_code(email: str, within_minutes: int | None = None) -> tuple[dict[str
             # 列表按新到旧排序，第一封带码的都超时了，后面只会更旧
             break
         return {
-            "email": email,
+            # 回显解析后的真实地址，便于调用方确认 + 号被正确还原
+            "email": resolve_target(email)[1] or email,
             "code": m["codes"][0],
             "codes": m["codes"],
             "subject": m.get("subject", ""),
