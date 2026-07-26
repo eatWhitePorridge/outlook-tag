@@ -292,6 +292,68 @@ def delete_account(account_id: int) -> None:
         cur.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
 
 
+def delete_accounts(ids: list[int]) -> int:
+    """批量删除，单事务。返回实际删除的账号数。"""
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    with db_cursor() as cur:
+        cur.execute(f"DELETE FROM aliases WHERE account_id IN ({placeholders})", ids)
+        cur.execute(f"DELETE FROM accounts WHERE id IN ({placeholders})", ids)
+        return cur.rowcount
+
+
+def list_accounts_by_ids(ids: list[int], secrets: bool = False) -> list[dict[str, Any]]:
+    if not ids:
+        return []
+    cols = (
+        "id, email, password, client_id, refresh_token, note, status"
+        if secrets
+        else "id, email, note, status"
+    )
+    placeholders = ",".join("?" * len(ids))
+    with db_cursor() as cur:
+        rows = cur.execute(
+            f"SELECT {cols} FROM accounts WHERE id IN ({placeholders}) ORDER BY id",
+            ids,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def iter_accounts_for_export(
+    q: str | None = None,
+    status: str | None = None,
+    ids: list[int] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """导出用：按筛选条件流式产出全部账号（含明文凭据），不做分页。"""
+    where: list[str] = []
+    params: list[Any] = []
+    if ids:
+        where.append(f"id IN ({','.join('?' * len(ids))})")
+        params.extend(ids)
+    if q:
+        where.append("(email LIKE ? OR note LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like, like])
+    if status and status != "all":
+        where.append("status = ?")
+        params.append(status)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT email, password, client_id, refresh_token, note, status "
+        f"FROM accounts {clause} ORDER BY id",
+        params,
+    )
+    while True:
+        rows = cur.fetchmany(200)
+        if not rows:
+            break
+        for r in rows:
+            yield dict(r)
+
+
 def list_aliases(account_id: int) -> list[dict[str, Any]]:
     with db_cursor() as cur:
         rows = cur.execute(

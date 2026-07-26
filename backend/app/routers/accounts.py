@@ -1,14 +1,21 @@
+import csv
+import io
 import re
 import random
 import string
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from app import db
 from app.auth import mask_secret, require_admin
-from app.schemas import AccountCreate, AccountUpdate, AliasCreate, BatchImportBody
-from app.services import mail as mail_service
+from app.schemas import (
+    AccountCreate,
+    AccountUpdate,
+    AliasCreate,
+    BatchIdsBody,
+    BatchImportBody,
+)
 from app.services.probe_job import probe_one_account, run_probe_batch
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
@@ -74,6 +81,87 @@ def probe_batch(
         workers=workers,
         only_unknown=only_unknown,
         source="manual",
+    )
+
+
+@router.post("/batch-delete")
+def batch_delete(body: BatchIdsBody, _: dict = Depends(require_admin)):
+    existing = db.list_accounts_by_ids(body.ids)
+    deleted = db.delete_accounts(body.ids)
+    emails = ", ".join(a["email"] for a in existing[:5])
+    suffix = "…" if len(existing) > 5 else ""
+    db.add_ops_log("batch_delete", f"{deleted}", f"{emails}{suffix}")
+    return {"deleted": deleted}
+
+
+@router.post("/batch-probe")
+def batch_probe(body: BatchIdsBody, _: dict = Depends(require_admin)):
+    cfg = db.get_settings_map(["probe_workers"])
+    workers = int(cfg.get("probe_workers") or 6)
+    return run_probe_batch(
+        limit=len(body.ids),
+        workers=workers,
+        source="manual-selected",
+        ids=body.ids,
+    )
+
+
+@router.get("/export")
+def export_accounts(
+    confirm: int = Query(0, description="必须为 1，防止误触发"),
+    ids: str | None = None,
+    q: str | None = None,
+    status: str | None = Query("all"),
+    _: dict = Depends(require_admin),
+):
+    """
+    导出明文凭据（密码 + refresh_token）为 CSV。
+
+    这会把账号的完整控制权写进一个本地文件，因此：
+    强制 confirm=1、强制记入 ops_log、响应 no-store 且不可缓存。
+    """
+    if confirm != 1:
+        raise HTTPException(400, "导出需要 confirm=1")
+
+    id_list: list[int] = []
+    if ids:
+        try:
+            id_list = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(400, "ids 必须是逗号分隔的整数")
+
+    rows = list(db.iter_accounts_for_export(q=q, status=status, ids=id_list or None))
+
+    db.add_ops_log(
+        "export_credentials",
+        f"{len(rows)}",
+        f"ids={len(id_list) or 'all'} q={q or ''} status={status or 'all'}",
+    )
+
+    def generate():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["email", "password", "client_id", "refresh_token", "note", "status"])
+        for r in rows:
+            writer.writerow([
+                r["email"], r["password"], r["client_id"],
+                r["refresh_token"], r["note"], r["status"],
+            ])
+            if buf.tell() > 32768:
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate(0)
+        if buf.tell():
+            yield buf.getvalue()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="accounts-export.csv"',
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
     )
 
 

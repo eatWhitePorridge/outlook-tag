@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import Login from './pages/Login.svelte'
-  import Admin from './pages/Admin.svelte'
+  import Admin from './pages/admin/Admin.svelte'
   import User from './pages/User.svelte'
   import Toast from './lib/ui/Toast.svelte'
   import { api } from './lib/api.js'

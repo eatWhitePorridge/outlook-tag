@@ -56,6 +56,8 @@ export const api = {
   probe: (id) => request(`/api/accounts/${id}/probe`, { method: 'POST' }),
   probeBatch: (limit = 20, only_unknown = true) =>
     request(`/api/accounts/probe-batch?limit=${limit}&only_unknown=${only_unknown}`, { method: 'POST' }),
+  batchProbe: (ids) => request('/api/accounts/batch-probe', { method: 'POST', body: { ids } }),
+  batchDelete: (ids) => request('/api/accounts/batch-delete', { method: 'POST', body: { ids } }),
 
   aliases: (id, opts = {}) => request(`/api/accounts/${id}/aliases`, opts),
   createAlias: (id, tag = '') => request(`/api/accounts/${id}/aliases`, { method: 'POST', body: { tag } }),

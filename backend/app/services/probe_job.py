@@ -46,13 +46,15 @@ def run_probe_batch(
     workers: int = 6,
     only_unknown: bool = False,
     source: str = "manual",
+    ids: list[int] | None = None,
 ) -> dict[str, Any]:
     limit = min(max(1, limit), 200)
     workers = min(max(1, workers), 16)
 
-    if only_unknown:
-        data = db.list_accounts(status="unknown", page=1, per_page=limit)
-        items = data["items"]
+    if ids:
+        items = db.list_accounts_by_ids(ids)
+    elif only_unknown:
+        items = db.list_accounts(status="unknown", page=1, per_page=limit)["items"]
     else:
         cfg = db.get_settings_map(["probe_stale_hours"])
         stale_hours = int(cfg.get("probe_stale_hours") or 24)

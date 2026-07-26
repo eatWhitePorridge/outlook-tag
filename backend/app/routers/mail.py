@@ -48,9 +48,12 @@ def list_messages(
     per_page: int = 20,
     filter_to: str | None = None,
     codes_only: bool = False,
+    search: str | None = None,
+    search_field: str = Query("subject", pattern="^(subject|from|text)$"),
     access: dict = Depends(require_admin_or_public_account),
 ):
     account = _load_secrets(account_id)
+    # public token 携带的 filter_to 是硬边界：search 只能在其之上收窄，不能替代它
     effective_filter = filter_to
     if access.get("role") == "public":
         effective_filter = access.get("filter_to") or filter_to
@@ -60,6 +63,8 @@ def list_messages(
         per_page=per_page,
         filter_to=effective_filter,
         codes_only=codes_only,
+        search=search,
+        search_field=search_field,
     )
     _persist_refresh(account_id, account, new_refresh)
     if "error" in result:

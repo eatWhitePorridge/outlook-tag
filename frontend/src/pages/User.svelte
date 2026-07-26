@@ -2,7 +2,7 @@
   import { api } from '../lib/api.js'
   import { initials } from '../lib/format.js'
   import { copyWithToast } from '../lib/stores/toast.svelte.js'
-  import MailBody from '../lib/MailBody.svelte'
+  import MailBody from '../lib/mail/MailBody.svelte'
 
   let { navigate } = $props()
   let email = $state('')

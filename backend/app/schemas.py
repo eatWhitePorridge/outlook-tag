@@ -26,6 +26,10 @@ class BatchImportBody(BaseModel):
     lines: str = Field(..., description="每行: email----password----client_id----refresh_token")
 
 
+class BatchIdsBody(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=500)
+
+
 class AliasCreate(BaseModel):
     tag: str = ""
 

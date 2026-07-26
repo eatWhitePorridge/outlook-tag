@@ -17,6 +17,12 @@ _token_cache: dict[int, tuple[str, float, str]] = {}
 _imap_cache: dict[int, tuple[imaplib.IMAP4_SSL, float]] = {}
 _lock = threading.Lock()
 
+# UID 搜索结果缓存：翻页时不必每次重跑 IMAP SEARCH
+_search_cache: dict[tuple[int, str], tuple[list[bytes], float]] = {}
+SEARCH_TTL = 60
+# codes_only 需要拉正文才能判断，扫描量必须封顶，否则大信箱会拖死请求
+CODES_SCAN_CAP = 600
+
 
 def get_access_token(account: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
     account_id = account["id"]
@@ -190,106 +196,172 @@ def probe_account(account: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": f"probe_failed: {e}", "refresh_token": new_refresh}
 
 
+def _imap_quote(value: str) -> str:
+    """IMAP 字符串字面量转义，防止搜索词里的引号破坏查询结构。"""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_criteria(filter_to: str | None, search: str | None, search_field: str) -> str:
+    """把别名过滤与关键词搜索合成一条 IMAP SEARCH 条件（隐式 AND）。"""
+    parts: list[str] = []
+    if filter_to:
+        # Outlook IMAP 不支持含 + 号的完整地址搜索，退化为搜 tag 片段
+        needle = filter_to.split("+", 1)[1].split("@")[0] if "+" in filter_to else filter_to
+        parts.append(f'HEADER To "{_imap_quote(needle)}"')
+    if search:
+        key = {"from": "FROM", "text": "TEXT"}.get(search_field, "SUBJECT")
+        parts.append(f'{key} "{_imap_quote(search)}"')
+    return f"({' '.join(parts)})" if parts else "ALL"
+
+
+def _search_uids(imap, account_id: int, criteria: str) -> list[bytes] | None:
+    """返回按新→旧排序的 UID 列表；60 秒内复用缓存。"""
+    key = (account_id, criteria)
+    now = time.time()
+    with _lock:
+        cached = _search_cache.get(key)
+        if cached and now - cached[1] < SEARCH_TTL:
+            return cached[0]
+
+    # imaplib 默认按 ASCII 编码检索条件，中文搜索词会抛 UnicodeEncodeError；
+    # 含非 ASCII 时必须显式声明 CHARSET UTF-8 并传 bytes。
+    if criteria.isascii():
+        status, data = imap.uid("search", None, criteria)
+    else:
+        status, data = imap.uid("search", "CHARSET", "UTF-8", criteria.encode("utf-8"))
+    if status != "OK":
+        return None
+    uids = data[0].split()
+    uids.reverse()
+    with _lock:
+        _search_cache[key] = (uids, now)
+        # 缓存只是加速翻页，不需要长期保留
+        if len(_search_cache) > 200:
+            for k, (_, ts) in list(_search_cache.items()):
+                if now - ts > SEARCH_TTL:
+                    _search_cache.pop(k, None)
+    return uids
+
+
+def _parse_fetch(msg_data) -> list[dict[str, Any]]:
+    """解析 FETCH 响应为消息摘要列表。"""
+    out: list[dict[str, Any]] = []
+    current_parts: list[tuple] = []
+    for item in msg_data:
+        if isinstance(item, tuple):
+            current_parts.append(item)
+        elif item == b")" and current_parts:
+            uid_str = None
+            header_data = b""
+            body_data = b""
+            for part in current_parts:
+                desc = part[0].decode("utf-8", errors="replace") if isinstance(part[0], bytes) else ""
+                if "HEADER.FIELDS" in desc:
+                    header_data = part[1]
+                elif "BODY[1]" in desc:
+                    body_data = part[1]
+                uid_match = re.search(r"UID (\d+)", desc)
+                if uid_match:
+                    uid_str = uid_match.group(1)
+            if uid_str:
+                msg = email_lib.message_from_bytes(header_data)
+                subject = decode_mime_header(msg.get("Subject", ""))
+                body_text = body_data.decode("utf-8", errors="replace") if body_data else ""
+                out.append(
+                    {
+                        "uid": uid_str,
+                        "subject": subject,
+                        "from": decode_mime_header(msg.get("From", "")),
+                        "to": decode_mime_header(msg.get("To", "")),
+                        "date": msg.get("Date", ""),
+                        "body_preview": body_text[:200],
+                        "codes": extract_codes(subject + " " + body_text),
+                    }
+                )
+            current_parts = []
+    out.sort(key=lambda m: int(m["uid"]), reverse=True)
+    return out
+
+
+def _fetch_chunk(imap, uids: list[bytes]) -> list[dict[str, Any]] | None:
+    if not uids:
+        return []
+    status, msg_data = imap.uid(
+        "fetch",
+        b",".join(uids),
+        "(UID BODY.PEEK[HEADER.FIELDS (Subject From Date To)] BODY.PEEK[1]<0.2048>)",
+    )
+    if status != "OK":
+        return None
+    return _parse_fetch(msg_data)
+
+
 def fetch_messages(
     account: dict[str, Any],
     page: int = 1,
     per_page: int = 20,
     filter_to: str | None = None,
     codes_only: bool = False,
+    search: str | None = None,
+    search_field: str = "subject",
 ) -> tuple[dict[str, Any], str | None]:
     imap, new_refresh, err = get_imap_connection(account)
     if err or not imap:
         return {"error": err or "连接失败", "code": "imap_error"}, None
 
     new_refresh = new_refresh or _new_refresh(account)
+    page = max(1, page)
+    per_page = min(max(1, per_page), 50)
+
     try:
         imap.select("INBOX", readonly=True)
-        if filter_to:
-            if "+" in filter_to:
-                tag_part = filter_to.split("+", 1)[1].split("@")[0]
-                status, data = imap.uid("search", None, f'(HEADER To "{tag_part}")')
-            else:
-                status, data = imap.uid("search", None, f'(HEADER To "{filter_to}")')
-        else:
-            status, data = imap.uid("search", None, "ALL")
-        if status != "OK":
+        criteria = _build_criteria(filter_to, (search or "").strip() or None, search_field)
+        all_uids = _search_uids(imap, account["id"], criteria)
+        if all_uids is None:
             return {"error": "搜索邮件失败", "code": "search_failed"}, new_refresh
 
-        all_uids = data[0].split()
         total = len(all_uids)
-        all_uids.reverse()
-        page = max(1, page)
-        per_page = min(max(1, per_page), 50)
-        start = (page - 1) * per_page
-        end = start + per_page
-        page_uids = all_uids[start:end]
-        if not page_uids:
+
+        if not codes_only:
+            start = (page - 1) * per_page
+            page_uids = all_uids[start : start + per_page]
+            messages = _fetch_chunk(imap, page_uids)
+            if messages is None:
+                return {"error": "拉取邮件失败", "code": "fetch_failed"}, new_refresh
             return {
-                "messages": [],
+                "messages": messages,
                 "total": total,
                 "page": page,
                 "per_page": per_page,
-                "total_pages": 0,
+                "total_pages": (total + per_page - 1) // per_page,
             }, new_refresh
 
-        uid_set = b",".join(page_uids)
-        status, msg_data = imap.uid(
-            "fetch",
-            uid_set,
-            "(UID BODY.PEEK[HEADER.FIELDS (Subject From Date To)] BODY.PEEK[1]<0.2048>)",
-        )
-        if status != "OK":
-            return {"error": "拉取邮件失败", "code": "fetch_failed"}, new_refresh
+        # codes_only：验证码只能从正文判断，服务端无法预先算出总页数。
+        # 从头滚动扫描，凑够 page*per_page 条命中后再切片，并封顶扫描量。
+        wanted = page * per_page
+        matched: list[dict[str, Any]] = []
+        scanned = 0
+        chunk = per_page * 4
+        while scanned < len(all_uids) and len(matched) <= wanted and scanned < CODES_SCAN_CAP:
+            batch = all_uids[scanned : scanned + chunk]
+            rows = _fetch_chunk(imap, batch)
+            if rows is None:
+                return {"error": "拉取邮件失败", "code": "fetch_failed"}, new_refresh
+            matched.extend(r for r in rows if r["codes"])
+            scanned += len(batch)
 
-        messages: list[dict[str, Any]] = []
-        current_parts: list[tuple] = []
-        for item in msg_data:
-            if isinstance(item, tuple):
-                current_parts.append(item)
-            elif item == b")" and current_parts:
-                uid_str = None
-                header_data = b""
-                body_data = b""
-                for part in current_parts:
-                    desc = part[0].decode("utf-8", errors="replace") if isinstance(part[0], bytes) else ""
-                    if "HEADER.FIELDS" in desc:
-                        header_data = part[1]
-                    elif "BODY[1]" in desc:
-                        body_data = part[1]
-                    uid_match = re.search(r"UID (\d+)", desc)
-                    if uid_match:
-                        uid_str = uid_match.group(1)
-                if uid_str:
-                    msg = email_lib.message_from_bytes(header_data)
-                    subject = decode_mime_header(msg.get("Subject", ""))
-                    sender = decode_mime_header(msg.get("From", ""))
-                    to = decode_mime_header(msg.get("To", ""))
-                    date_str = msg.get("Date", "")
-                    body_text = body_data.decode("utf-8", errors="replace") if body_data else ""
-                    codes = extract_codes(subject + " " + body_text)
-                    if codes_only and not codes:
-                        current_parts = []
-                        continue
-                    messages.append(
-                        {
-                            "uid": uid_str,
-                            "subject": subject,
-                            "from": sender,
-                            "to": to,
-                            "date": date_str,
-                            "body_preview": body_text[:200],
-                            "codes": codes,
-                        }
-                    )
-                current_parts = []
-
-        messages.sort(key=lambda m: int(m["uid"]), reverse=True)
+        start = (page - 1) * per_page
+        window = matched[start : start + per_page]
         return {
-            "messages": messages,
+            "messages": window,
             "total": total,
             "page": page,
             "per_page": per_page,
-            "total_pages": (total + per_page - 1) // per_page,
+            # 过滤后的总数未知，用 has_more 驱动前端翻页
+            "total_pages": None,
+            "has_more": len(matched) > start + per_page,
+            "scanned": scanned,
+            "scan_capped": scanned >= CODES_SCAN_CAP and scanned < len(all_uids),
         }, new_refresh
     except Exception as e:
         return {"error": str(e), "code": "fetch_error"}, new_refresh
