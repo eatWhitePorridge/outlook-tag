@@ -5,9 +5,17 @@ FastAPI + Svelte 前后端分离。管理上千 Outlook 账号、`+tag` 别名�
 ## 结构
 
 ```
-backend/          FastAPI API
-frontend/         Vite + Svelte
-data/             SQLite（运行时）
+backend/app/
+  routers/          auth / accounts / mail / settings
+  services/         mail.py(OAuth+IMAP) / probe_job.py / scheduler.py
+  db.py             原生 sqlite3 + WAL
+frontend/src/
+  lib/ui/           Modal / Pager / Field / ConfirmDialog / Toast …
+  lib/mail/         MailBody / mailHtml / CodeChips
+  lib/stores/       toast / keymap
+  pages/admin/      Admin 外壳 + 侧栏 + 邮件面板 + modals/
+  pages/User.svelte 公开查询页
+data/               SQLite（运行时）
 ```
 
 ## 环境变量
@@ -141,8 +149,29 @@ HTTPS 配好后将 `COOKIE_SECURE=true` 并 `docker compose up -d`。
 
 配置存在 SQLite `settings` 表，无需改环境变量。
 
+## 管理端操作
+
+| 能力 | 说明 |
+|----|----|
+| 多选批量 | 勾选账号后底部浮出操作条：批量探测 / 批量删除 / 导出凭据 |
+| 邮件搜索 | 按主题 / 发件人 / 全文，映射到 IMAP `SUBJECT`/`FROM`/`TEXT` |
+| 快捷键 | `/` 聚焦搜索、`j`/`k` 上下切账号、`r` 刷新、`Esc` 返回；输入框内不触发 |
+| 自动刷新 | 30 秒一次，标签页切到后台时暂停，回到前台立即补一次 |
+
+**`codes_only`（仅显示验证码）**：验证码只能从正文判断，服务端无法预先算出总页数，
+因此该模式改用「上一页 / 下一页 + `has_more`」而非页码，且单次扫描封顶 600 封。
+
 ## 安全
 
 - 管理接口需 Cookie 会话
-- 公开读信需 `/api/lookup` 签发的短期 token（`X-Public-Token`）
+- 公开读信需 `/api/lookup` 签发的短期 token（`X-Public-Token`）。
+  token 内绑定 `filter_to`，`search` 参数只能在其之上收窄，无法绕过别名边界
+- 邮件正文经 `lettersanitizer` 清洗后放进 iframe 渲染，
+  sandbox 不含 `allow-scripts` 与 `allow-same-origin`
 - 勿将 `.env`、真实 token 提交仓库
+
+> **导出凭据的代价**：`GET /api/accounts/export` 会把明文密码与 `refresh_token`
+> 写成 CSV 下载到本地。接口强制 `confirm=1`、强制记入 `ops_log`、响应 `no-store`，
+> 但文件一旦落盘就等同于交出这些账号的完整控制权。
+>
+> 同理，`data/mail.db` 中凭据为明文存储，备份该文件等于备份全部凭据。

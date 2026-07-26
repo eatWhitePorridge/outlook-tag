@@ -40,7 +40,7 @@
   <iframe
     class="frame"
     title="邮件正文"
-    sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+    sandbox="allow-popups allow-popups-to-escape-sandbox"
     referrerpolicy="no-referrer"
     srcdoc={srcdoc}
   ></iframe>
