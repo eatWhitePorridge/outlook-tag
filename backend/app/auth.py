@@ -11,6 +11,8 @@ from app.config import Settings, get_settings
 
 ADMIN_COOKIE = "mail_admin"
 PUBLIC_HEADER = "X-Public-Token"
+API_KEY_HEADER = "X-API-Key"
+API_KEY_PREFIX = "mk_"
 
 
 def _serializer(settings: Settings) -> URLSafeTimedSerializer:
@@ -120,6 +122,37 @@ def require_admin_or_public_account(
             raise HTTPException(status_code=403, detail="无权访问该邮箱")
         return data
     raise HTTPException(status_code=401, detail="未授权")
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """返回 (明文, sha256, 展示用前缀)。明文只在创建响应里出现一次，不入库。"""
+    plain = API_KEY_PREFIX + secrets.token_urlsafe(32)
+    return plain, hash_api_key(plain), plain[:10]
+
+
+def hash_api_key(plain: str) -> str:
+    return hashlib.sha256(plain.encode()).hexdigest()
+
+
+def require_api_key(
+    x_api_key: Annotated[str | None, Header(alias=API_KEY_HEADER)] = None,
+) -> dict:
+    """
+    只从请求头读 Key，刻意不支持 ?key= 查询参数
+    —— 查询串会落进 nginx / uvicorn 的访问日志。
+    """
+    from app import db  # 延迟导入，避免与 db -> config 的循环
+
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="缺少 API Key（请求头 X-API-Key）")
+
+    row = db.get_api_key_by_hash(hash_api_key(x_api_key.strip()))
+    # 即使查不到也走一次比较，避免用响应时间区分「不存在」与「已停用」
+    if not row or not hmac.compare_digest(row["key_hash"], hash_api_key(x_api_key.strip())):
+        raise HTTPException(status_code=401, detail="无效的 API Key")
+    if not row["enabled"]:
+        raise HTTPException(status_code=401, detail="该 API Key 已停用")
+    return {"id": row["id"], "name": row["name"]}
 
 
 def mask_secret(value: str, keep: int = 6) -> str:

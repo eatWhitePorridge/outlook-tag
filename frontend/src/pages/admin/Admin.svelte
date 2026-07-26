@@ -13,6 +13,7 @@
   import ImportModal from './modals/ImportModal.svelte'
   import OpsModal from './modals/OpsModal.svelte'
   import SettingsModal from './modals/SettingsModal.svelte'
+  import ApiKeysModal from './modals/ApiKeysModal.svelte'
 
   let { navigate, onLogout } = $props()
 
@@ -38,6 +39,7 @@
   let showImport = $state(false)
   let showOps = $state(false)
   let showSettings = $state(false)
+  let showApiKeys = $state(false)
 
   const EMPTY_FORM = { raw: '', email: '', password: '', client_id: '', refresh_token: '', note: '' }
   let form = $state({ ...EMPTY_FORM })
@@ -47,7 +49,9 @@
   let mailPane = $state(null)
   let pendingDelete = $state(null)
 
-  let modalOpen = $derived(showAdd || showEdit || showImport || showOps || showSettings)
+  let modalOpen = $derived(
+    showAdd || showEdit || showImport || showOps || showSettings || showApiKeys,
+  )
 
   onMount(() => {
     if (window.innerWidth < 900) sidebarOpen = false
@@ -213,6 +217,7 @@
     onops={() => (showOps = true)}
     onimport={() => (showImport = true)}
     onsettings={() => { showSettings = true; loadSettings() }}
+    onapikeys={() => (showApiKeys = true)}
     onprobe={probeBatch}
     onadd={openAdd}
     onlogout={onLogout}
@@ -290,6 +295,12 @@
 />
 
 <OpsModal open={showOps} onclose={() => (showOps = false)} onerror={(m) => (error = m)} />
+
+<ApiKeysModal
+  open={showApiKeys}
+  onclose={() => (showApiKeys = false)}
+  onerror={(m) => (error = m)}
+/>
 
 <ConfirmDialog
   open={!!pendingDelete}

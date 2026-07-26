@@ -10,7 +10,14 @@ import logging
 
 from app import db
 from app.config import get_settings
-from app.routers import accounts, auth, mail, settings as settings_router
+from app.routers import (
+    accounts,
+    api_keys,
+    auth,
+    mail,
+    public_api,
+    settings as settings_router,
+)
 from app.services import scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +50,8 @@ app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(mail.router)
 app.include_router(settings_router.router)
+app.include_router(api_keys.router)
+app.include_router(public_api.router)
 
 
 @app.get("/api/health")

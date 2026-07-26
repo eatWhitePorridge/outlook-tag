@@ -70,6 +70,11 @@ export const api = {
   lookup: (email, opts = {}) => request('/api/lookup', { ...opts, method: 'POST', body: { email } }),
 
   ops: (params = {}, opts = {}) => request(`/api/ops?${qs({ per_page: 50, ...params })}`, opts),
+  apiKeys: (opts = {}) => request('/api/api-keys', opts),
+  createApiKey: (name) => request('/api/api-keys', { method: 'POST', body: { name } }),
+  updateApiKey: (id, enabled) => request(`/api/api-keys/${id}`, { method: 'PATCH', body: { enabled } }),
+  deleteApiKey: (id) => request(`/api/api-keys/${id}`, { method: 'DELETE' }),
+
   systemSettings: (opts = {}) => request('/api/settings/system', opts),
   updateSystemSettings: (body) => request('/api/settings/system', { method: 'PUT', body }),
   probeRunNow: () => request('/api/settings/probe/run-now', { method: 'POST' }),

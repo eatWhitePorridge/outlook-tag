@@ -38,6 +38,14 @@ class LookupBody(BaseModel):
     email: str
 
 
+class ApiKeyCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60)
+
+
+class ApiKeyUpdate(BaseModel):
+    enabled: bool
+
+
 class SystemSettingsUpdate(BaseModel):
     probe_enabled: bool | None = None
     probe_interval_minutes: int | None = Field(default=None, ge=1, le=24 * 60)

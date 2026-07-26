@@ -91,6 +91,22 @@ def init_db() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                key_hash TEXT NOT NULL UNIQUE,
+                prefix TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                calls INTEGER DEFAULT 0,
+                last_used_at TEXT,
+                last_target TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_accounts_updated ON accounts(updated_at)")
@@ -375,6 +391,66 @@ def create_alias(account_id: int, alias: str, tag: str) -> int:
 def delete_alias(alias_id: int) -> None:
     with db_cursor() as cur:
         cur.execute("DELETE FROM aliases WHERE id = ?", (alias_id,))
+
+
+def create_api_key(name: str, key_hash: str, prefix: str) -> int:
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO api_keys (name, key_hash, prefix, created_at) VALUES (?, ?, ?, ?)",
+            (name, key_hash, prefix, _utc_now()),
+        )
+        return int(cur.lastrowid)
+
+
+def list_api_keys() -> list[dict[str, Any]]:
+    """不返回 key_hash —— 界面不需要，也没必要多一处泄露面。"""
+    with db_cursor() as cur:
+        rows = cur.execute(
+            """
+            SELECT id, name, prefix, enabled, calls, last_used_at, last_target, created_at
+            FROM api_keys ORDER BY id DESC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_api_key_by_hash(key_hash: str) -> dict[str, Any] | None:
+    with db_cursor() as cur:
+        row = cur.execute(
+            "SELECT id, name, key_hash, enabled FROM api_keys WHERE key_hash = ?",
+            (key_hash,),
+        ).fetchone()
+    return _row(row)
+
+
+def get_api_key(key_id: int) -> dict[str, Any] | None:
+    with db_cursor() as cur:
+        row = cur.execute(
+            "SELECT id, name, prefix, enabled FROM api_keys WHERE id = ?", (key_id,)
+        ).fetchone()
+    return _row(row)
+
+
+def set_api_key_enabled(key_id: int, enabled: bool) -> None:
+    with db_cursor() as cur:
+        cur.execute("UPDATE api_keys SET enabled = ? WHERE id = ?", (1 if enabled else 0, key_id))
+
+
+def delete_api_key(key_id: int) -> None:
+    with db_cursor() as cur:
+        cur.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+
+
+def touch_api_key(key_id: int, target: str = "") -> None:
+    """
+    记调用量。刻意不写 ops_log —— 脚本轮询会把那张表撑爆，
+    调用信息只留在这一行上。
+    """
+    with db_cursor() as cur:
+        cur.execute(
+            "UPDATE api_keys SET calls = calls + 1, last_used_at = ?, last_target = ? WHERE id = ?",
+            (_utc_now(), target[:120], key_id),
+        )
 
 
 def add_ops_log(action: str, target: str = "", detail: str = "") -> None:
