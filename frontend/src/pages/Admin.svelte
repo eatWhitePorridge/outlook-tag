@@ -1,6 +1,8 @@
 <script>
   import { onMount } from 'svelte'
-  import { api, copyText, relativeTime } from '../lib/api.js'
+  import { api } from '../lib/api.js'
+  import { formatEta, relativeTime, shortDate, statusLabel } from '../lib/format.js'
+  import { copyWithToast, flash } from '../lib/stores/toast.svelte.js'
   import MailBody from '../lib/MailBody.svelte'
 
   let { navigate, onLogout } = $props()
@@ -31,7 +33,6 @@
   let selectedUid = $state(null)
   let view = $state('list') // list | detail
   let error = $state('')
-  let toast = $state('')
   let aliasTag = $state('')
 
   let showAdd = $state(false)
@@ -46,6 +47,9 @@
   let importText = $state('')
   let importResult = $state(null)
   let ops = $state([])
+  let opsPage = $state(1)
+  let opsTotalPages = $state(0)
+  let opsLoading = $state(false)
   let busy = $state(false)
 
   let sys = $state({
@@ -58,7 +62,6 @@
   })
 
   let timer
-  let toastTimer
   let searchTimer
 
   onMount(() => {
@@ -72,7 +75,6 @@
     }, 15000)
     return () => {
       clearInterval(timer)
-      clearTimeout(toastTimer)
       clearInterval(poll)
       document.removeEventListener('click', onDoc)
     }
@@ -85,20 +87,7 @@
     }
   })
 
-  function flash(msg) {
-    toast = msg
-    clearTimeout(toastTimer)
-    toastTimer = setTimeout(() => { toast = '' }, 1600)
-  }
-
-  async function copy(text, label = '已复制') {
-    try {
-      await copyText(text)
-      flash(label)
-    } catch {
-      flash('复制失败')
-    }
-  }
+  const copy = copyWithToast
 
   async function refreshAll() {
     await Promise.all([loadStats(), loadAccounts()])
@@ -199,10 +188,18 @@
 
   async function removeAlias(id, alias) {
     if (!confirm(`删除别名 ${alias}？`)) return
-    await api.deleteAlias(id)
-    if (filterTo === alias) filterTo = null
-    await loadAliases()
-    await loadMessages(1)
+    busy = true
+    try {
+      await api.deleteAlias(id)
+      if (filterTo === alias) filterTo = null
+      await loadAliases()
+      await loadMessages(1)
+      flash('别名已删除')
+    } catch (e) {
+      error = e.message
+    } finally {
+      busy = false
+    }
   }
 
   async function probeSelected() {
@@ -268,15 +265,6 @@
     finally { busy = false }
   }
 
-  function formatEta(sec) {
-    if (sec == null) return '—'
-    const s = Math.max(0, Math.floor(sec))
-    if (s < 60) return `${s}s`
-    const m = Math.floor(s / 60)
-    const r = s % 60
-    return r ? `${m}m${r}s` : `${m}m`
-  }
-
   async function saveAccount() {
     busy = true
     try {
@@ -331,17 +319,24 @@
   async function removeAccount(id, email) {
     menuId = null
     if (!confirm(`删除 ${email}？`)) return
-    await api.deleteAccount(id)
-    if (selectedId === id) {
-      selectedId = null
-      selectedEmail = ''
-      messages = []
-      detail = null
-      aliases = []
-      view = 'list'
+    busy = true
+    try {
+      await api.deleteAccount(id)
+      if (selectedId === id) {
+        selectedId = null
+        selectedEmail = ''
+        messages = []
+        detail = null
+        aliases = []
+        view = 'list'
+      }
+      flash('已删除')
+      await refreshAll()
+    } catch (e) {
+      error = e.message
+    } finally {
+      busy = false
     }
-    flash('已删除')
-    await refreshAll()
   }
 
   async function doImport() {
@@ -357,16 +352,21 @@
 
   async function openOps() {
     showOps = true
-    try {
-      const data = await api.ops(1)
-      ops = data.items || []
-    } catch (e) { error = e.message }
+    await loadOps(1)
   }
 
-  function statusLabel(s) {
-    if (s === 'ok') return '正常'
-    if (s === 'error') return '异常'
-    return '未测'
+  async function loadOps(p = 1) {
+    opsLoading = true
+    try {
+      const data = await api.ops({ page: p })
+      ops = data.items || []
+      opsPage = data.page
+      opsTotalPages = data.total_pages
+    } catch (e) {
+      error = e.message
+    } finally {
+      opsLoading = false
+    }
   }
 
   function filterAlias(alias) {
@@ -387,12 +387,12 @@
 
   function onSearch() {
     clearTimeout(searchTimer)
-    searchTimer = setTimeout(() => { page = 1; loadAccounts(1) }, 220)
+    searchTimer = setTimeout(() => { page = 1; loadAccounts(1) }, 300)
   }
 
-  function shortDate(d) {
-    if (!d) return ''
-    return d.replace(/ \+0000.*/, '').replace(/ \(.*\)/, '')
+  function closeEdit() {
+    showEdit = false
+    editSecrets = null // 不清会在下次打开时闪现上一个账号的凭据
   }
 </script>
 
@@ -529,9 +529,9 @@
         {/if}
       </div>
       <div class="pager nums">
-        <button class="btn btn-sm btn-ghost" type="button" disabled={page <= 1} onclick={() => loadAccounts(page - 1)}>上页</button>
+        <button class="btn btn-sm btn-ghost" type="button" disabled={page <= 1 || loadingList} onclick={() => loadAccounts(page - 1)}>上页</button>
         <span class="faint">{page}/{Math.max(totalPages, 1)}</span>
-        <button class="btn btn-sm btn-ghost" type="button" disabled={page >= totalPages || totalPages === 0} onclick={() => loadAccounts(page + 1)}>下页</button>
+        <button class="btn btn-sm btn-ghost" type="button" disabled={page >= totalPages || totalPages === 0 || loadingList} onclick={() => loadAccounts(page + 1)}>下页</button>
       </div>
     </aside>
 
@@ -608,9 +608,9 @@
               <button type="button" class="chip" class:on={!filterTo} onclick={showAllMail}>全部</button>
               {#each aliases as al (al.id)}
                 <div class="alias-item" class:on={filterTo === al.alias}>
-                  <button type="button" class="chip" class:on={filterTo === al.alias} onclick={() => filterAlias(al.alias)} title={al.alias}>+{al.tag}</button>
-                  <button type="button" class="mini" title="复制" onclick={() => copy(al.alias, '别名已复制')}>复制</button>
-                  <button type="button" class="mini danger" title="删除" onclick={() => removeAlias(al.id, al.alias)}>删</button>
+                  <button type="button" class="chip" class:on={filterTo === al.alias} onclick={() => filterAlias(al.alias)} title={al.alias} aria-label="只看别名 {al.alias}">+{al.tag}</button>
+                  <button type="button" class="mini" title="复制" aria-label="复制别名 {al.alias}" disabled={busy} onclick={() => copy(al.alias, '别名已复制')}>复制</button>
+                  <button type="button" class="mini danger" title="删除" aria-label="删除别名 {al.alias}" disabled={busy} onclick={() => removeAlias(al.id, al.alias)}>删</button>
                 </div>
               {/each}
             </div>
@@ -632,6 +632,7 @@
                   class:active={selectedUid === m.uid}
                   role="button"
                   tabindex="0"
+                  aria-label="来自 {m.from || '未知发件人'}：{m.subject || '(无主题)'}"
                   onclick={() => openMessage(m)}
                   onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && openMessage(m)}
                 >
@@ -654,6 +655,7 @@
                         <button
                           type="button"
                           class="code-chip"
+                          aria-label="复制验证码 {c}"
                           onclick={(e) => { e.stopPropagation(); copy(c, `已复制 ${c}`) }}
                         >{c}</button>
                       {/each}
@@ -665,19 +667,15 @@
           </div>
 
           <div class="pager nums">
-            <button class="btn btn-sm btn-ghost" type="button" disabled={mailPage <= 1} onclick={() => loadMessages(mailPage - 1)}>上一页</button>
+            <button class="btn btn-sm btn-ghost" type="button" disabled={mailPage <= 1 || mailLoading} onclick={() => loadMessages(mailPage - 1)}>上一页</button>
             <span class="faint">{mailPage}/{Math.max(mailTotalPages, 1)}</span>
-            <button class="btn btn-sm btn-ghost" type="button" disabled={mailPage >= mailTotalPages || mailTotalPages === 0} onclick={() => loadMessages(mailPage + 1)}>下一页</button>
+            <button class="btn btn-sm btn-ghost" type="button" disabled={mailPage >= mailTotalPages || mailTotalPages === 0 || mailLoading} onclick={() => loadMessages(mailPage + 1)}>下一页</button>
           </div>
         </div>
       {/if}
     </main>
   </div>
 </div>
-
-{#if toast}
-  <div class="toast fade-in" role="status">{toast}</div>
-{/if}
 
 {#if showAdd}
   <div class="modal-backdrop" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.target === e.currentTarget && (showAdd = false)} onkeydown={(e) => e.key === 'Escape' && (showAdd = false)}>
@@ -704,7 +702,7 @@
 {/if}
 
 {#if showEdit && editSecrets}
-  <div class="modal-backdrop" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.target === e.currentTarget && (showEdit = false)} onkeydown={(e) => e.key === 'Escape' && (showEdit = false)}>
+  <div class="modal-backdrop" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.target === e.currentTarget && closeEdit()} onkeydown={(e) => e.key === 'Escape' && closeEdit()}>
     <div class="modal-card">
       <div style="padding: 1.25rem 1.4rem; display: grid; gap: 0.75rem; overflow: auto;">
         <h3 class="serif" style="margin: 0; font-size: 1.2rem;">编辑账号凭据</h3>
@@ -714,7 +712,7 @@
         <textarea class="field" rows="2" placeholder="Refresh Token" bind:value={editSecrets.refresh_token}></textarea>
         <input class="field" placeholder="备注信息" bind:value={editSecrets.note} />
         <div class="modal-actions" style="margin-top: 0.5rem;">
-          <button class="btn" type="button" onclick={() => (showEdit = false)}>取消</button>
+          <button class="btn" type="button" onclick={closeEdit}>取消</button>
           <button class="btn btn-primary" type="button" disabled={busy} onclick={saveEdit}>保存修改</button>
         </div>
       </div>
@@ -765,6 +763,11 @@
           {:else}
             <p class="empty muted">暂无操作日志记录</p>
           {/each}
+        </div>
+        <div class="ops-pager nums">
+          <button class="btn btn-sm btn-ghost" type="button" disabled={opsPage <= 1 || opsLoading} onclick={() => loadOps(opsPage - 1)}>上一页</button>
+          <span class="faint">{opsPage}/{Math.max(opsTotalPages, 1)}</span>
+          <button class="btn btn-sm btn-ghost" type="button" disabled={opsPage >= opsTotalPages || opsTotalPages === 0 || opsLoading} onclick={() => loadOps(opsPage + 1)}>下一页</button>
         </div>
         <div class="modal-actions">
           <button class="btn" type="button" onclick={() => (showOps = false)}>关闭</button>
@@ -1157,23 +1160,12 @@
   .skeleton-list { padding: 1rem 0.9rem; display: grid; gap: 0.75rem; }
   .sk-item { height: 56px; }
 
-  .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .err { color: var(--vermilion); margin: 0; }
   .scrim { display: none; }
 
-  .toast {
-    position: fixed; left: 50%; bottom: 1.75rem; transform: translateX(-50%);
-    z-index: 200;
-    padding: 0.65rem 1.35rem;
-    border-radius: 999px;
-    background: var(--ink); color: var(--paper);
-    font-size: 0.88rem; font-weight: 500;
-    box-shadow: var(--shadow-lg);
+  .ops-pager {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.35rem 0.1rem;
   }
-
-  .lbl { font-size: 0.85rem; font-weight: 500; color: var(--ink-muted); }
-  .center { text-align: center; margin: 0.15rem 0; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 0.55rem; margin-top: 0.5rem; }
   .import-list {
     max-height: 280px;
     border-top: 1px solid color-mix(in srgb, var(--stone) 70%, transparent);

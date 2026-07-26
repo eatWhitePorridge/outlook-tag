@@ -1,0 +1,12 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e6]: 信
+    - generic [ref=e8]:
+      - paragraph [ref=e9]: Admin Gateway
+      - heading "信笺 · 管理端" [level=1] [ref=e10]
+  - paragraph [ref=e11]: "请输入系统通行口令（`ADMIN_PASSWORD`）以解锁管理面板。"
+  - generic [ref=e12]:
+    - generic [ref=e13]: 通行密码
+    - textbox "通行密码" [ref=e14]:
+      - /placeholder: ••••••••
+  - button "解封并进入管理端" [disabled] [ref=e15]

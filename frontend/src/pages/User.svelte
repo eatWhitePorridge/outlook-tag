@@ -1,5 +1,7 @@
 <script>
-  import { api, copyText } from '../lib/api.js'
+  import { api } from '../lib/api.js'
+  import { initials } from '../lib/format.js'
+  import { copyWithToast } from '../lib/stores/toast.svelte.js'
   import MailBody from '../lib/MailBody.svelte'
 
   let { navigate } = $props()
@@ -15,14 +17,6 @@
   let detailLoading = $state(false)
   let codesOnly = $state(false)
   let view = $state('list') // list | detail
-  let toast = $state('')
-  let toastTimer
-
-  function flash(msg) {
-    toast = msg
-    clearTimeout(toastTimer)
-    toastTimer = setTimeout(() => { toast = '' }, 1600)
-  }
 
   async function lookup() {
     error = ''
@@ -88,14 +82,7 @@
     error = ''
   }
 
-  async function copyCode(c) {
-    try {
-      await copyText(c)
-      flash(`已复制 ${c}`)
-    } catch {
-      flash('复制失败')
-    }
-  }
+  const copyCode = (c) => copyWithToast(c, `已复制 ${c}`)
 </script>
 
 <div class="page fade-in">
@@ -181,8 +168,8 @@
             <div class="detail-head">
               <h2 class="serif">{detail.subject || '(无主题)'}</h2>
               <div class="meta-card">
-                <div class="sender-avatar">
-                  {(detail.from || 'M')[0].toUpperCase()}
+                <div class="sender-avatar" aria-hidden="true">
+                  {initials(detail.from)}
                 </div>
                 <div class="meta-info">
                   <div class="from-to">
@@ -257,11 +244,12 @@
                   class="mail-item"
                   role="button"
                   tabindex="0"
+                  aria-label="来自 {m.from || '未知发件人'}：{m.subject || '(无主题)'}"
                   onclick={() => openMessage(m)}
                   onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && openMessage(m)}
                 >
-                  <div class="mail-avatar">
-                    {(m.from || 'M')[0].toUpperCase()}
+                  <div class="mail-avatar" aria-hidden="true">
+                    {initials(m.from)}
                   </div>
                   <div class="mail-content">
                     <div class="mail-top">
@@ -274,7 +262,7 @@
                     {#if m.codes?.length}
                       <div class="codes">
                         {#each m.codes as c}
-                          <button type="button" class="code-chip" onclick={(e) => { e.stopPropagation(); copyCode(c) }}>
+                          <button type="button" class="code-chip" aria-label="复制验证码 {c}" onclick={(e) => { e.stopPropagation(); copyCode(c) }}>
                             <span class="stamp-seal">印</span>
                             <span>{c}</span>
                           </button>
@@ -289,9 +277,9 @@
 
           {#if totalPages > 1}
             <div class="pager nums">
-              <button class="btn btn-sm btn-ghost" type="button" disabled={page <= 1} onclick={() => loadMessages(page - 1)}>上一页</button>
+              <button class="btn btn-sm btn-ghost" type="button" disabled={page <= 1 || loading} onclick={() => loadMessages(page - 1)}>上一页</button>
               <span class="faint" style="font-size: 0.85rem;">{page} / {totalPages}</span>
-              <button class="btn btn-sm btn-ghost" type="button" disabled={page >= totalPages} onclick={() => loadMessages(page + 1)}>下一页</button>
+              <button class="btn btn-sm btn-ghost" type="button" disabled={page >= totalPages || loading} onclick={() => loadMessages(page + 1)}>下一页</button>
             </div>
           {/if}
         </div>
@@ -301,9 +289,6 @@
   {/if}
 </div>
 
-{#if toast}
-  <div class="toast fade-in" role="status">{toast}</div>
-{/if}
 
 <style>
   .page {
@@ -495,13 +480,6 @@
     color: var(--vermilion);
     font-size: 0.88rem;
     margin: 0;
-  }
-
-  .toast {
-    position: fixed; left: 50%; bottom: 2rem; transform: translateX(-50%);
-    z-index: 200; padding: 0.65rem 1.35rem; border-radius: 999px;
-    background: var(--ink); color: var(--paper); font-size: 0.88rem; font-weight: 500;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
   }
 
   .spinner {

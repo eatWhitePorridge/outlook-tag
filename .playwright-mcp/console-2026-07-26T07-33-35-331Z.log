@@ -1,0 +1,1 @@
+[   10367ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/accounts/1/messages?page=1&per_page=20&filter_to=user1%40outlook.com:0

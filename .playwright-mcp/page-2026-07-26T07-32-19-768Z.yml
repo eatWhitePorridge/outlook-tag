@@ -1,0 +1,96 @@
+- generic [ref=e2]:
+  - generic [ref=e16]:
+    - banner [ref=e17]:
+      - generic [ref=e18]:
+        - button "切换侧栏" [ref=e19] [cursor=pointer]
+        - generic [ref=e21]: 信
+        - generic [ref=e22]:
+          - heading "信笺 · 管理控制台" [level=1] [ref=e23]
+          - paragraph [ref=e24]:
+            - generic [ref=e25]: "巡检周期: 10m"
+            - generic [ref=e26]: ·
+            - generic [ref=e27]: "按批: 40"
+      - generic [ref=e28]:
+        - generic [ref=e29]:
+          - generic [ref=e30]: 全部账号
+          - generic [ref=e31]: "3"
+        - generic [ref=e32]:
+          - generic [ref=e33]: 正常连接
+          - generic [ref=e34]: "0"
+        - generic [ref=e35]:
+          - generic [ref=e36]: 异常状态
+          - generic [ref=e37]: "3"
+        - generic [ref=e38]:
+          - generic [ref=e39]: Tag 别名
+          - generic [ref=e40]: "0"
+      - navigation [ref=e41]:
+        - button "公开页" [ref=e42] [cursor=pointer]
+        - button "日志" [ref=e47] [cursor=pointer]
+        - button "批量导入" [ref=e51] [cursor=pointer]
+        - button "配置" [ref=e55] [cursor=pointer]
+        - button "探测" [ref=e59] [cursor=pointer]
+        - button "添加" [ref=e62] [cursor=pointer]
+        - button "退出" [ref=e64] [cursor=pointer]
+    - generic [ref=e65]:
+      - complementary "账号列表" [ref=e66]:
+        - generic [ref=e67]:
+          - heading "账号阵列" [level=2] [ref=e68]
+          - generic [ref=e69]: "3"
+        - generic [ref=e70]:
+          - textbox "搜索邮箱 / 备注..." [ref=e71]
+          - combobox [ref=e72]:
+            - option "全部" [selected]
+            - option "正常"
+            - option "异常"
+            - option "未测"
+        - generic [ref=e73]:
+          - generic [ref=e74]:
+            - button "异常 user3@outlook.com 异常 · 5 分钟前 · 测试3" [ref=e75] [cursor=pointer]:
+              - generic "异常" [ref=e76]
+              - generic [ref=e77]:
+                - generic "user3@outlook.com" [ref=e78]
+                - generic [ref=e79]:
+                  - generic [ref=e80]: 异常
+                  - generic [ref=e81]: ·
+                  - generic [ref=e82]: 5 分钟前
+                  - generic [ref=e83]: ·
+                  - generic [ref=e84]: 测试3
+            - button "更多操作" [ref=e86] [cursor=pointer]: ⋯
+          - generic [ref=e87]:
+            - button "异常 user2@outlook.com 异常 · 5 分钟前 · 测试2" [ref=e88] [cursor=pointer]:
+              - generic "异常" [ref=e89]
+              - generic [ref=e90]:
+                - generic "user2@outlook.com" [ref=e91]
+                - generic [ref=e92]:
+                  - generic [ref=e93]: 异常
+                  - generic [ref=e94]: ·
+                  - generic [ref=e95]: 5 分钟前
+                  - generic [ref=e96]: ·
+                  - generic [ref=e97]: 测试2
+            - button "更多操作" [ref=e99] [cursor=pointer]: ⋯
+          - generic [ref=e100]:
+            - button "异常 user1@outlook.com 异常 · 5 分钟前 · 测试1" [ref=e101] [cursor=pointer]:
+              - generic "异常" [ref=e102]
+              - generic [ref=e103]:
+                - generic "user1@outlook.com" [ref=e104]
+                - generic [ref=e105]:
+                  - generic [ref=e106]: 异常
+                  - generic [ref=e107]: ·
+                  - generic [ref=e108]: 5 分钟前
+                  - generic [ref=e109]: ·
+                  - generic [ref=e110]: 测试1
+            - generic [ref=e111]:
+              - button "更多操作" [ref=e112] [cursor=pointer]: ⋯
+              - menu [ref=e123]:
+                - button "编辑凭据" [ref=e124] [cursor=pointer]
+                - button "复制邮箱" [active] [ref=e125] [cursor=pointer]
+                - button "删除账号" [ref=e126] [cursor=pointer]
+        - generic [ref=e113]:
+          - button "上页" [disabled] [ref=e114]
+          - generic [ref=e115]: 1/1
+          - button "下页" [disabled] [ref=e116]
+      - main [ref=e117]:
+        - generic [ref=e118]:
+          - paragraph [ref=e121]: 从左侧选择 Outlook 账号
+          - paragraph [ref=e122]: 独立收取信件、自动衍生别名与提取验证码
+  - status [ref=e127]: 邮箱已复制

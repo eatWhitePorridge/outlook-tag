@@ -3,6 +3,7 @@
   import Login from './pages/Login.svelte'
   import Admin from './pages/Admin.svelte'
   import User from './pages/User.svelte'
+  import Toast from './lib/ui/Toast.svelte'
   import { api } from './lib/api.js'
 
   let path = $state(location.pathname)
@@ -60,6 +61,8 @@
 {:else}
   <User {navigate} />
 {/if}
+
+<Toast />
 
 <style>
   .boot {
