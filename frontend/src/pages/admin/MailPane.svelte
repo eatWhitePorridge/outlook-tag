@@ -1,10 +1,8 @@
 <script>
   import { untrack } from 'svelte'
   import { api } from '../../lib/api.js'
-  import { shortDate } from '../../lib/format.js'
   import { createRequest } from '../../lib/request.svelte.js'
-  import CodeChips from '../../lib/mail/CodeChips.svelte'
-  import EmptyState from '../../lib/ui/EmptyState.svelte'
+  import MessageList from '../../lib/mail/MessageList.svelte'
   import Pager from '../../lib/ui/Pager.svelte'
   import AliasBar from './AliasBar.svelte'
   import MailDetailPane from './MailDetailPane.svelte'
@@ -150,6 +148,7 @@
   <MailDetailPane
     {detail}
     loading={detailReq.loading}
+    {accountId}
     {accountEmail}
     {hasPrev}
     {hasNext}
@@ -198,44 +197,16 @@
       {onerror}
     />
 
-    <div class="scroll mail-list">
-      {#if listReq.loading && !messages.length}
-        <p class="empty muted">拉取邮件中…</p>
-      {:else if !messages.length}
-        <EmptyState
-          title={search.trim() ? '没有匹配的邮件' : '没有邮件'}
-          hint={search.trim() ? '换个关键词或搜索范围试试' : ''}
-          icon={false}
-        />
-      {:else}
-        {#each messages as m (m.uid)}
-          <div
-            class="mail"
-            class:active={selectedUid === m.uid}
-            role="button"
-            tabindex="0"
-            aria-label="来自 {m.from || '未知发件人'}：{m.subject || '(无主题)'}"
-            onclick={() => openMessage(m)}
-            onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && openMessage(m)}
-          >
-            <div class="mail-main">
-              <div class="mail-line">
-                <span class="subject truncate">{m.subject || '(无主题)'}</span>
-                {#if m.codes?.length}<span class="otp-mark">码</span>{/if}
-              </div>
-              <div class="mail-sub faint">
-                <span class="truncate from">{m.from}</span>
-                <span class="nums date">{shortDate(m.date)}</span>
-              </div>
-              {#if m.body_preview}
-                <p class="preview faint truncate">{m.body_preview}</p>
-              {/if}
-            </div>
-            <CodeChips codes={m.codes} align="end" />
-          </div>
-        {/each}
-      {/if}
-    </div>
+    <MessageList
+      {messages}
+      {selectedUid}
+      loading={listReq.loading}
+      variant="compact"
+      emptyIcon={false}
+      emptyTitle={search.trim() ? '没有匹配的邮件' : '没有邮件'}
+      emptyHint={search.trim() ? '换个关键词或搜索范围试试' : ''}
+      onopen={openMessage}
+    />
 
     <Pager
       {page}
@@ -268,37 +239,4 @@
   .scope { width: 78px; appearance: auto; }
   .mail-search { width: 150px; }
   .check { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.82rem; }
-
-  .mail-list { min-height: 0; }
-  .empty { padding: 3rem 1rem; text-align: center; }
-  .mail {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.85rem;
-    align-items: start;
-    padding: 0.95rem 1.35rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--stone) 50%, transparent);
-    cursor: pointer;
-    transition: background 150ms var(--ease);
-    content-visibility: auto;
-    contain-intrinsic-size: auto 84px;
-  }
-  .mail:hover { background: color-mix(in srgb, var(--ink) 2.5%, transparent); }
-  .mail.active {
-    background: color-mix(in srgb, var(--wood) 18%, transparent);
-    box-shadow: inset 3px 0 0 var(--indigo);
-  }
-  .mail-main { min-width: 0; display: grid; gap: 0.25rem; }
-  .mail-line { display: flex; gap: 0.5rem; align-items: center; min-width: 0; }
-  .subject { flex: 1; min-width: 0; font-weight: 500; font-size: 0.95rem; }
-  .otp-mark {
-    flex-shrink: 0;
-    font-size: 0.65rem; font-weight: 700;
-    padding: 0.05rem 0.3rem; border-radius: 4px;
-    background: var(--vermilion); color: #fff;
-  }
-  .mail-sub { display: flex; justify-content: space-between; gap: 0.85rem; font-size: 0.78rem; }
-  .from { min-width: 0; flex: 1; }
-  .date { flex-shrink: 0; }
-  .preview { margin: 0.15rem 0 0; font-size: 0.82rem; max-width: 100%; color: var(--ink-muted); }
 </style>

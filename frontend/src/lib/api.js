@@ -67,7 +67,7 @@ export const api = {
     request(`/api/accounts/${id}/messages?${qs(params)}`, { ...opts, publicToken }),
   message: (id, uid, publicToken, opts = {}) =>
     request(`/api/accounts/${id}/messages/${uid}`, { ...opts, publicToken }),
-  lookup: (email) => request('/api/lookup', { method: 'POST', body: { email } }),
+  lookup: (email, opts = {}) => request('/api/lookup', { ...opts, method: 'POST', body: { email } }),
 
   ops: (params = {}, opts = {}) => request(`/api/ops?${qs({ per_page: 50, ...params })}`, opts),
   systemSettings: (opts = {}) => request('/api/settings/system', opts),

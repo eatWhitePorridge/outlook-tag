@@ -385,21 +385,31 @@ def add_ops_log(action: str, target: str = "", detail: str = "") -> None:
         )
 
 
-def list_ops_log(page: int = 1, per_page: int = 50) -> dict[str, Any]:
+def list_ops_log(page: int = 1, per_page: int = 50, action: str | None = None) -> dict[str, Any]:
     page = max(1, page)
     per_page = min(max(1, per_page), 200)
+    clause = ""
+    params: list[Any] = []
+    if action and action != "all":
+        clause = "WHERE action = ?"
+        params.append(action)
     with db_cursor() as cur:
-        total = cur.execute("SELECT COUNT(*) FROM ops_log").fetchone()[0]
+        total = cur.execute(f"SELECT COUNT(*) FROM ops_log {clause}", params).fetchone()[0]
         offset = (page - 1) * per_page
         rows = cur.execute(
-            """
+            f"""
             SELECT id, action, target, detail, created_at
-            FROM ops_log ORDER BY id DESC LIMIT ? OFFSET ?
+            FROM ops_log {clause} ORDER BY id DESC LIMIT ? OFFSET ?
             """,
-            (per_page, offset),
+            params + [per_page, offset],
         ).fetchall()
+        # 供前端下拉使用；ops_log 的 action 取值有限，DISTINCT 成本可忽略
+        actions = [r[0] for r in cur.execute(
+            "SELECT DISTINCT action FROM ops_log ORDER BY action"
+        ).fetchall()]
     return {
         "items": [dict(r) for r in rows],
+        "actions": actions,
         "total": total,
         "page": page,
         "per_page": per_page,

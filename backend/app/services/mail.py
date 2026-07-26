@@ -149,16 +149,33 @@ def _decode_part(part) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
-def _extract_bodies(msg) -> tuple[str, str]:
-    """Prefer multipart/alternative: take best html + plain parts."""
+def _extract_bodies(msg) -> tuple[str, str, list[dict[str, Any]]]:
+    """
+    取最佳 html + 纯文本正文，同时顺带收集附件元信息。
+
+    附件的 index 是 msg.walk() 的遍历序号，下载端点按同样的遍历顺序定位，
+    因此对同一封邮件是稳定的。
+    """
     html_body = ""
     text_body = ""
+    attachments: list[dict[str, Any]] = []
 
     if msg.is_multipart():
-        for part in msg.walk():
+        for i, part in enumerate(msg.walk()):
             if part.get_content_maintype() == "multipart":
                 continue
-            if part.get_content_disposition() == "attachment":
+            disposition = part.get_content_disposition()
+            filename = decode_mime_header(part.get_filename() or "")
+            if disposition == "attachment" or (filename and disposition != "inline"):
+                payload = part.get_payload(decode=True) or b""
+                attachments.append(
+                    {
+                        "index": i,
+                        "filename": filename or f"attachment-{i}",
+                        "content_type": part.get_content_type(),
+                        "size": len(payload),
+                    }
+                )
                 continue
             ct = part.get_content_type()
             decoded = _decode_part(part)
@@ -175,7 +192,36 @@ def _extract_bodies(msg) -> tuple[str, str]:
         else:
             text_body = decoded
 
-    return html_body, text_body
+    return html_body, text_body, attachments
+
+
+def fetch_attachment(
+    account: dict[str, Any], uid: str, index: int
+) -> tuple[dict[str, Any] | None, str | None]:
+    """按 walk() 序号取出单个附件的原始字节。"""
+    imap, new_refresh, err = get_imap_connection(account)
+    if err or not imap:
+        return None, err or "连接失败"
+    try:
+        imap.select("INBOX", readonly=True)
+        status, msg_data = imap.uid("fetch", uid.encode(), "(RFC822)")
+        if status != "OK" or not msg_data or not msg_data[0]:
+            return None, "邮件不存在"
+        msg = email_lib.message_from_bytes(msg_data[0][1])
+        for i, part in enumerate(msg.walk()):
+            if i != index:
+                continue
+            if part.get_content_maintype() == "multipart":
+                return None, "该位置不是附件"
+            filename = decode_mime_header(part.get_filename() or "") or f"attachment-{i}"
+            return {
+                "filename": filename,
+                "content_type": part.get_content_type(),
+                "data": part.get_payload(decode=True) or b"",
+            }, None
+        return None, "附件不存在"
+    except Exception as e:
+        return None, str(e)
 
 
 def _new_refresh(account: dict[str, Any]) -> str | None:
@@ -386,7 +432,7 @@ def fetch_single_message(account: dict[str, Any], uid: str) -> tuple[dict[str, A
         to = decode_mime_header(msg.get("To", ""))
         date_str = msg.get("Date", "")
 
-        html_body, text_body = _extract_bodies(msg)
+        html_body, text_body, attachments = _extract_bodies(msg)
         body = html_body or text_body
         codes = extract_codes(subject + " " + text_body + " " + _strip_html(html_body))
         return {
@@ -399,6 +445,7 @@ def fetch_single_message(account: dict[str, Any], uid: str) -> tuple[dict[str, A
             "text_body": text_body,
             "is_html": bool(html_body),
             "codes": codes,
+            "attachments": attachments,
         }, new_refresh
     except Exception as e:
         return {"error": str(e), "code": "fetch_error"}, new_refresh

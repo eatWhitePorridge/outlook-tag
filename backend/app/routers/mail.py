@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app import db
 from app.auth import issue_public_token, require_admin, require_admin_or_public_account
@@ -87,6 +89,34 @@ def message_detail(
     return result
 
 
+@router.get("/accounts/{account_id}/messages/{uid}/attachments/{index}")
+def download_attachment(
+    account_id: int,
+    uid: str,
+    index: int,
+    access: dict = Depends(require_admin_or_public_account),
+):
+    """附件下载。走与读信同一套鉴权，public token 同样只能取到自己账号的邮件。"""
+    account = _load_secrets(account_id)
+    att, err = mail_service.fetch_attachment(account, uid, index)
+    if err or not att:
+        raise HTTPException(404 if err == "附件不存在" else 500, err or "附件读取失败")
+    filename = quote(att["filename"])
+    return Response(
+        content=att["data"],
+        media_type=att["content_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @router.get("/ops")
-def ops_log(page: int = 1, per_page: int = 50, _: dict = Depends(require_admin)):
-    return db.list_ops_log(page=page, per_page=per_page)
+def ops_log(
+    page: int = 1,
+    per_page: int = 50,
+    action: str | None = None,
+    _: dict = Depends(require_admin),
+):
+    return db.list_ops_log(page=page, per_page=per_page, action=action)

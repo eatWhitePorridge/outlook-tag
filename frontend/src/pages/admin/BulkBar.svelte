@@ -7,6 +7,7 @@
 
   let busy = $state(false)
   let confirmDelete = $state(false)
+  let confirmExport = $state(false)
 
   let ids = $derived([...selected])
   let count = $derived(ids.length)
@@ -45,8 +46,8 @@
    * 后端要求 confirm=1 且会写 ops_log，这里直接用浏览器导航触发下载。
    */
   function exportCsv() {
-    if (!confirm(`导出 ${count} 个账号的明文凭据（含 refresh_token）到本地文件？此操作会记入操作日志。`)) return
     window.location.href = `/api/accounts/export?confirm=1&ids=${ids.join(',')}`
+    confirmExport = false
     flash('已开始导出')
   }
 </script>
@@ -56,7 +57,7 @@
     <span class="count nums">已选 {count} 个账号</span>
     <div class="acts">
       <button class="btn btn-sm" type="button" disabled={busy} onclick={probe}>批量探测</button>
-      <button class="btn btn-sm" type="button" disabled={busy} onclick={exportCsv}>导出凭据</button>
+      <button class="btn btn-sm" type="button" disabled={busy} onclick={() => (confirmExport = true)}>导出凭据</button>
       <button class="btn btn-sm btn-danger" type="button" disabled={busy} onclick={() => (confirmDelete = true)}>批量删除</button>
       <button class="btn btn-sm btn-ghost" type="button" onclick={() => (selected = new Set())}>取消选择</button>
     </div>
@@ -74,6 +75,17 @@
   {busy}
   onconfirm={remove}
   oncancel={() => (confirmDelete = false)}
+/>
+
+<ConfirmDialog
+  open={confirmExport}
+  title="导出明文凭据"
+  message="将 {count} 个账号的密码与 refresh_token 导出为 CSV 下载到本地。"
+  detail="文件一旦落盘就等同于交出这些账号的完整控制权。本次导出会记入操作日志。"
+  confirmLabel="我了解风险，导出"
+  danger
+  onconfirm={exportCsv}
+  oncancel={() => (confirmExport = false)}
 />
 
 <style>

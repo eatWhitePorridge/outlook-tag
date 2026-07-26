@@ -17,7 +17,7 @@
   } = $props()
 </script>
 
-<div class="acc" class:active class:picked={selected}>
+<div class="acc" class:active class:picked={selected} class:menu-open={menuOpen}>
   {#if selectMode}
     <label class="pick">
       <input
@@ -74,6 +74,15 @@
     /* 视口外的行跳过渲染，长列表滚动明显更顺 */
     content-visibility: auto;
     contain-intrinsic-size: auto 58px;
+  }
+  /*
+   * content-visibility: auto 会施加 paint containment，从而创建层叠上下文，
+   * 把下拉菜单的 z-index 困在本行内 —— 结果是下一行盖住菜单、点不到。
+   * 菜单展开时（同时最多一行）解除 containment 并抬高层级。
+   */
+  .acc.menu-open {
+    content-visibility: visible;
+    z-index: 30;
   }
   .acc:has(.pick) { grid-template-columns: 30px minmax(0, 1fr) 30px; }
   .acc.active {

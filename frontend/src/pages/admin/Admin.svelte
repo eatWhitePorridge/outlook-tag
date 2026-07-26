@@ -4,6 +4,7 @@
   import { flash } from '../../lib/stores/toast.svelte.js'
   import { registerKeys } from '../../lib/stores/keymap.js'
   import EmptyState from '../../lib/ui/EmptyState.svelte'
+  import ConfirmDialog from '../../lib/ui/ConfirmDialog.svelte'
   import AdminHeader from './AdminHeader.svelte'
   import AccountSidebar from './AccountSidebar.svelte'
   import MailPane from './MailPane.svelte'
@@ -44,6 +45,7 @@
 
   let sidebar = $state(null)
   let mailPane = $state(null)
+  let pendingDelete = $state(null)
 
   let modalOpen = $derived(showAdd || showEdit || showImport || showOps || showSettings)
 
@@ -175,8 +177,9 @@
     } catch (e) { error = e.message } finally { busy = false }
   }
 
-  async function removeAccount(a) {
-    if (!confirm(`删除 ${a.email}？`)) return
+  async function removeAccount() {
+    const a = pendingDelete
+    if (!a) return
     busy = true
     try {
       await api.deleteAccount(a.id)
@@ -184,6 +187,7 @@
         selectedId = null
         selectedEmail = ''
       }
+      pendingDelete = null
       flash('已删除')
       await refreshAll()
     } catch (e) { error = e.message } finally { busy = false }
@@ -229,7 +233,7 @@
       {selectedId}
       onselect={selectAccount}
       onedit={openEdit}
-      ondelete={removeAccount}
+      ondelete={(a) => (pendingDelete = a)}
       onerror={(m) => (error = m)}
     />
 
@@ -286,6 +290,18 @@
 />
 
 <OpsModal open={showOps} onclose={() => (showOps = false)} onerror={(m) => (error = m)} />
+
+<ConfirmDialog
+  open={!!pendingDelete}
+  title="删除账号"
+  message="删除 {pendingDelete?.email ?? ''}？"
+  detail="该账号的凭据与全部别名会一并删除，无法撤销。"
+  confirmLabel="删除"
+  danger
+  {busy}
+  onconfirm={removeAccount}
+  oncancel={() => (pendingDelete = null)}
+/>
 
 <SettingsModal
   open={showSettings}

@@ -1,11 +1,13 @@
 <script>
   import { api } from '../../lib/api.js'
   import { copyWithToast, flash } from '../../lib/stores/toast.svelte.js'
+  import ConfirmDialog from '../../lib/ui/ConfirmDialog.svelte'
 
   let { accountId, aliases = [], filterTo = null, onfilter, onchanged, onerror } = $props()
 
   let tag = $state('')
   let busy = $state(false)
+  let pendingDelete = $state(null)
 
   async function create() {
     if (!accountId) return
@@ -22,11 +24,13 @@
     }
   }
 
-  async function remove(al) {
-    if (!confirm(`删除别名 ${al.alias}？`)) return
+  async function remove() {
+    const al = pendingDelete
+    if (!al) return
     busy = true
     try {
       await api.deleteAlias(al.id)
+      pendingDelete = null
       flash('别名已删除')
       onchanged?.(al.alias)
     } catch (e) {
@@ -62,7 +66,7 @@
           class="mini danger"
           aria-label="删除别名 {al.alias}"
           disabled={busy}
-          onclick={() => remove(al)}
+          onclick={() => (pendingDelete = al)}
         >删</button>
       </div>
     {/each}
@@ -78,6 +82,18 @@
     <button class="btn btn-sm" type="button" disabled={busy} onclick={create}>+ 别名</button>
   </div>
 </div>
+
+<ConfirmDialog
+  open={!!pendingDelete}
+  title="删除别名"
+  message="删除 {pendingDelete?.alias ?? ''}？"
+  detail="该别名收到的历史邮件仍在邮箱里，只是不再作为筛选入口。"
+  confirmLabel="删除"
+  danger
+  {busy}
+  onconfirm={remove}
+  oncancel={() => (pendingDelete = null)}
+/>
 
 <style>
   .alias-row {

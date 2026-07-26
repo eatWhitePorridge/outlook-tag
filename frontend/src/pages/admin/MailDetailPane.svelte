@@ -1,10 +1,10 @@
 <script>
-  import CodeChips from '../../lib/mail/CodeChips.svelte'
-  import MailBody from '../../lib/mail/MailBody.svelte'
+  import MailDetail from '../../lib/mail/MailDetail.svelte'
 
   let {
     detail = null,
     loading = false,
+    accountId = null,
     accountEmail = '',
     hasPrev = false,
     hasNext = false,
@@ -27,24 +27,9 @@
     <span class="faint truncate current-mail">{accountEmail}</span>
   </div>
 
-  {#if loading}
-    <div class="pad"><p class="muted">加载邮件正文中…</p></div>
-  {:else if detail?.error}
-    <div class="pad"><p class="err">{detail.error}</p></div>
-  {:else if detail}
-    <div class="detail-scroll scroll">
-      <header class="detail-head">
-        <h2 class="serif">{detail.subject || '(无主题)'}</h2>
-        <p class="meta-line muted">{detail.from}</p>
-        <p class="meta-line faint">→ {detail.to}</p>
-        <p class="meta-line faint nums">{detail.date}</p>
-        <CodeChips codes={detail.codes} size="lg" />
-      </header>
-      <div class="detail-body">
-        <MailBody {detail} />
-      </div>
-    </div>
-  {/if}
+  <div class="detail-scroll scroll">
+    <MailDetail {detail} {loading} {accountId} variant="compact" />
+  </div>
 </div>
 
 <style>
@@ -63,13 +48,4 @@
   .nav-pair { display: flex; gap: 0.25rem; }
   .current-mail { font-size: 0.85rem; min-width: 0; margin-left: auto; }
   .detail-scroll { min-height: 0; display: flex; flex-direction: column; }
-  .detail-head {
-    padding: 1.25rem 1.5rem 1.1rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--stone) 60%, transparent);
-  }
-  .detail-head h2 { margin: 0 0 0.6rem; font-size: 1.4rem; font-weight: 600; line-height: 1.35; }
-  .meta-line { margin: 0.15rem 0; font-size: 0.88rem; }
-  .detail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  .pad { padding: 3rem 1rem; text-align: center; }
-  .pad p { margin: 0; }
 </style>
