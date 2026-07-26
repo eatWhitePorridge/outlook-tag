@@ -3,6 +3,7 @@
   import { api } from '../../lib/api.js'
   import { flash } from '../../lib/stores/toast.svelte.js'
   import { registerKeys } from '../../lib/stores/keymap.js'
+  import { modals } from '../../lib/stores/modals.svelte.js'
   import EmptyState from '../../lib/ui/EmptyState.svelte'
   import ConfirmDialog from '../../lib/ui/ConfirmDialog.svelte'
   import AdminHeader from './AdminHeader.svelte'
@@ -49,9 +50,8 @@
   let mailPane = $state(null)
   let pendingDelete = $state(null)
 
-  let modalOpen = $derived(
-    showAdd || showEdit || showImport || showOps || showSettings || showApiKeys,
-  )
+  // 由 Modal 自行登记，新增弹窗无需改这里（此前手动枚举漏掉了全部 ConfirmDialog）
+  let modalOpen = $derived(modals.open > 0)
 
   onMount(() => {
     if (window.innerWidth < 900) sidebarOpen = false
@@ -93,7 +93,14 @@
 
   async function loadSettings(silent = false) {
     try {
-      sys = await api.systemSettings()
+      const next = await api.systemSettings()
+      if (silent && showSettings) {
+        // 弹窗开着时是 15 秒一次的后台轮询，只能更新调度器状态。
+        // 整体替换会把用户正在输入、尚未保存的配置直接冲掉。
+        sys.scheduler = next.scheduler
+      } else {
+        sys = next
+      }
     } catch (e) {
       if (!silent) error = e.message
     }

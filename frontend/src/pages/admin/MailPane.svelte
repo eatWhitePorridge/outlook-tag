@@ -55,6 +55,8 @@
     })
   })
 
+  $effect(() => () => clearTimeout(searchTimer))
+
   // 自动刷新：标签页隐藏时暂停，回到前台立即补一次
   $effect(() => {
     if (!autoRefresh || !accountId || view !== 'list') return

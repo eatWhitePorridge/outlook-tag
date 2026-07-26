@@ -55,3 +55,18 @@
 [ 7336937ms] [VERBOSE] [DOM] Password forms should have (optionally hidden) username fields for accessibility: (More info: https://goo.gl/9p2vKq) %o @ http://209.38.79.116:8080/admin:0
 [13027085ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://209.38.79.116:8080/api/auth/me:0
 [13047002ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://209.38.79.116:8080/api/auth/me:0
+[13581385ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://209.38.79.116:8080/api/auth/me:0
+[13581501ms] [VERBOSE] [DOM] Password forms should have (optionally hidden) username fields for accessibility: (More info: https://goo.gl/9p2vKq) %o @ http://209.38.79.116:8080/admin:0
+[13593825ms] Error: https://svelte.dev/e/effect_update_depth_exceeded
+    at xl (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:3064)
+    at vs (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:19184)
+    at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:15504)
+    at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:16585)
+    at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:16585)
+    at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:16585)
+    at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:16585)
+    at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:16585)
+    at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:16585)
+    at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:16585)
+[13729874ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://209.38.79.116:8080/api/auth/me:0
+[13729978ms] [VERBOSE] [DOM] Password forms should have (optionally hidden) username fields for accessibility: (More info: https://goo.gl/9p2vKq) %o @ http://209.38.79.116:8080/admin:0

@@ -13,8 +13,21 @@
     actions,
   } = $props()
 
+  import { untrack } from 'svelte'
+  import { popModal, pushModal } from '../stores/modals.svelte.js'
+
   let card = $state(null)
   let restoreTo = null
+  let downOnBackdrop = false
+
+  // 登记自身，供页面屏蔽全局快捷键。
+  // 必须 untrack：pushModal 里的 `open += 1` 是读-改-写，
+  // 不隔离的话这个 effect 会依赖自己写的值，直接 effect_update_depth_exceeded。
+  $effect(() => {
+    if (!open) return
+    untrack(pushModal)
+    return () => untrack(popModal)
+  })
 
   const FOCUSABLE =
     'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
@@ -65,10 +78,18 @@
 
 {#if open}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <!--
+    用 mousedown 记录起点：只有按下和松开都在遮罩上才算点击关闭。
+    否则在输入框里选中文字、拖到遮罩上松手，弹窗会关掉，输入内容全丢。
+  -->
   <div
     class="modal-backdrop"
     role="presentation"
-    onclick={(e) => e.target === e.currentTarget && onclose?.()}
+    onmousedown={(e) => (downOnBackdrop = e.target === e.currentTarget)}
+    onclick={(e) => {
+      if (e.target === e.currentTarget && downOnBackdrop) onclose?.()
+      downOnBackdrop = false
+    }}
     onkeydown={onKeydown}
   >
     <div

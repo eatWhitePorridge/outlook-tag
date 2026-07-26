@@ -29,6 +29,8 @@
   const req = createRequest()
 
   export async function reload(p = page) {
+    // 翻页后原选中项已不在视野内，留着会导致"批量删除看不见的行"
+    if (p !== page) resetSelection()
     const data = await req.run((signal) =>
       api.accounts({ q, status, page: p, per_page: perPage }, { signal }),
     )
@@ -97,7 +99,10 @@
   $effect(() => {
     const onDoc = () => { menuId = null }
     document.addEventListener('click', onDoc)
-    return () => document.removeEventListener('click', onDoc)
+    return () => {
+      document.removeEventListener('click', onDoc)
+      clearTimeout(searchTimer) // 否则组件卸载后防抖仍会打一次请求
+    }
   })
 </script>
 

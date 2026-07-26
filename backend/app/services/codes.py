@@ -70,22 +70,22 @@ def _age_seconds(date_str: str) -> int | None:
     return max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
 
 
-def fetch_recent(email: str) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """取最近 SCAN_LIMIT 封（带 8 秒缓存）。返回 (消息列表, 错误)。"""
+def fetch_recent(email: str) -> tuple[list[dict[str, Any]] | None, str | None, str]:
+    """取最近 SCAN_LIMIT 封（带 8 秒缓存）。返回 (消息列表, 错误, 解析出的真实地址)。"""
     account, filter_to = resolve_target(email)
     if not account:
-        return None, "邮箱不存在"
+        return None, "邮箱不存在", ""
 
     key = (int(account["id"]), filter_to)
     now = time.time()
     with _lock:
         hit = _cache.get(key)
         if hit and now - hit[1] < RESULT_TTL:
-            return hit[0]["messages"], None
+            return hit[0]["messages"], None, filter_to
 
     full = db.get_account(int(account["id"]), secrets=True)
     if not full:
-        return None, "邮箱不存在"
+        return None, "邮箱不存在", ""
 
     result, new_refresh = mail_service.fetch_messages(
         full, page=1, per_page=SCAN_LIMIT, filter_to=filter_to
@@ -93,7 +93,7 @@ def fetch_recent(email: str) -> tuple[list[dict[str, Any]] | None, str | None]:
     if new_refresh and new_refresh != full.get("refresh_token"):
         db.update_account(int(account["id"]), refresh_token=new_refresh)
     if "error" in result:
-        return None, result["error"]
+        return None, result["error"], filter_to
 
     messages = result.get("messages", [])
     with _lock:
@@ -102,7 +102,9 @@ def fetch_recent(email: str) -> tuple[list[dict[str, Any]] | None, str | None]:
             for k, (_, ts) in list(_cache.items()):
                 if now - ts > RESULT_TTL:
                     _cache.pop(k, None)
-    return messages, None
+            while len(_cache) > 500:
+                _cache.pop(min(_cache, key=lambda k: _cache[k][1]), None)
+    return messages, None, filter_to
 
 
 def latest_code(email: str, within_minutes: int | None = None) -> tuple[dict[str, Any] | None, str | None]:
@@ -110,7 +112,7 @@ def latest_code(email: str, within_minutes: int | None = None) -> tuple[dict[str
     返回最近一封带验证码的邮件。
     within_minutes 用于避免脚本拿到上一轮流程留下的旧码。
     """
-    messages, err = fetch_recent(email)
+    messages, err, resolved = fetch_recent(email)
     if err:
         return None, err
 
@@ -118,12 +120,16 @@ def latest_code(email: str, within_minutes: int | None = None) -> tuple[dict[str
         if not m.get("codes"):
             continue
         age = _age_seconds(m.get("date", ""))
-        if within_minutes is not None and age is not None and age > within_minutes * 60:
-            # 列表按新到旧排序，第一封带码的都超时了，后面只会更旧
-            break
+        if within_minutes is not None:
+            # Date 头由发件人完全控制。解析不出年龄时必须按"不满足"处理，
+            # 否则去掉 Date 头就能绕过这个时间窗 —— 而它的用途正是防止取到旧码。
+            if age is None or age > within_minutes * 60:
+                # 列表按 UID 新到旧排序，后面只会更旧
+                break
         return {
-            # 回显解析后的真实地址，便于调用方确认 + 号被正确还原
-            "email": resolve_target(email)[1] or email,
+            # 回显解析后的真实地址，便于调用方确认 + 号被正确还原。
+            # 复用 fetch_recent 已解析的结果，不再查一次库。
+            "email": resolved or email,
             "code": m["codes"][0],
             "codes": m["codes"],
             "subject": m.get("subject", ""),

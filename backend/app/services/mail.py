@@ -1,12 +1,16 @@
 import email as email_lib
 import imaplib
+import logging
 import re
 import threading
 import time
+from contextlib import contextmanager
 from email.header import decode_header
 from typing import Any
 
 import requests
+
+log = logging.getLogger(__name__)
 
 TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 IMAP_HOST = "outlook.office365.com"
@@ -16,6 +20,11 @@ IMAP_TTL = 270
 _token_cache: dict[int, tuple[str, float, str]] = {}
 _imap_cache: dict[int, tuple[imaplib.IMAP4_SSL, float]] = {}
 _lock = threading.Lock()
+
+# 每账号一把锁。imaplib 不是线程安全的，而后台调度器线程与 HTTP 请求线程
+# 会从 _imap_cache 拿到同一个连接对象 —— 两边同时发命令会让标签响应错配，
+# 轻则 abort，重则把一个请求的邮件正文返回给另一个请求。
+_account_locks: dict[int, threading.Lock] = {}
 
 # UID 搜索结果缓存：翻页时不必每次重跑 IMAP SEARCH
 _search_cache: dict[tuple[int, str], tuple[list[bytes], float]] = {}
@@ -27,20 +36,41 @@ CODES_SCAN_CAP = 600
 PREVIEW_BYTES = 24576
 
 
+def _account_lock(account_id: int) -> threading.Lock:
+    with _lock:
+        lk = _account_locks.get(account_id)
+        if lk is None:
+            lk = threading.Lock()
+            _account_locks[account_id] = lk
+        return lk
+
+
+@contextmanager
+def imap_session(account: dict[str, Any]):
+    """
+    独占该账号的 IMAP 连接，直到整段命令序列（select + search + fetch）结束。
+
+    只锁缓存字典是不够的 —— 必须锁住连接的整个使用期间，
+    否则两个线程仍会在同一个 socket 上交错发命令。
+    """
+    with _account_lock(account["id"]):
+        yield get_imap_connection(account)
+
+
 def get_access_token(account: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """调用方必须已持有该账号的锁 —— 否则两个线程会拿同一个
+    refresh_token 各刷一次，而微软的 refresh token 是一次性轮换的，
+    后一次会让前一次作废，账号直接报废。"""
     account_id = account["id"]
     now = time.time()
     with _lock:
-        if account_id in _token_cache:
-            cached_token, expire_time, cached_refresh = _token_cache[account_id]
-            if now < expire_time - 60:
-                return cached_token, cached_refresh, None
+        cached = _token_cache.get(account_id)
+    if cached:
+        cached_token, expire_time, cached_refresh = cached
+        if now < expire_time - 60:
+            return cached_token, cached_refresh, None
 
-    refresh_token = (
-        _token_cache[account_id][2]
-        if account_id in _token_cache
-        else account["refresh_token"]
-    )
+    refresh_token = cached[2] if cached else account["refresh_token"]
     data = {
         "client_id": account["client_id"],
         "grant_type": "refresh_token",
@@ -49,12 +79,17 @@ def get_access_token(account: dict[str, Any]) -> tuple[str | None, str | None, s
     }
     try:
         resp = requests.post(TOKEN_URL, data=data, timeout=20)
+        if resp.status_code != 200:
+            return None, None, f"token_invalid: {resp.status_code}"
+        # resp.json() 与取 access_token 都可能抛（网关返回 HTML、字段缺失），
+        # 必须在 try 内，否则会一路逃到路由层变成裸 500
+        token_data = resp.json()
+        access_token = token_data["access_token"]
     except requests.RequestException as e:
         return None, None, f"token_request_failed: {e}"
-    if resp.status_code != 200:
-        return None, None, f"token_invalid: {resp.status_code}"
-    token_data = resp.json()
-    access_token = token_data["access_token"]
+    except (ValueError, KeyError, TypeError) as e:
+        return None, None, f"token_malformed: {e}"
+
     new_refresh = token_data.get("refresh_token", account["refresh_token"])
     expires_in = token_data.get("expires_in", 3600)
     with _lock:
@@ -63,6 +98,7 @@ def get_access_token(account: dict[str, Any]) -> tuple[str | None, str | None, s
 
 
 def get_imap_connection(account: dict[str, Any]) -> tuple[imaplib.IMAP4_SSL | None, str | None, str | None]:
+    """内部函数：调用方须已持有该账号的锁，请用 imap_session()。"""
     account_id = account["id"]
     now = time.time()
 
@@ -102,15 +138,26 @@ def get_imap_connection(account: dict[str, Any]) -> tuple[imaplib.IMAP4_SSL | No
 
 
 def decode_mime_header(header_value: str | None) -> str:
+    """
+    errors="replace" 只挡坏字节，挡不住坏的编码名 ——
+    `=?unknown-8bit?B?...?=`（RFC 1428 标准写法）会让 bytes.decode 抛 LookupError。
+    一封这样的邮件此前足以让整页 500 且永久无法加载。
+    """
     if not header_value:
         return ""
-    parts = decode_header(header_value)
+    try:
+        parts = decode_header(header_value)
+    except Exception:
+        return str(header_value)
     decoded: list[str] = []
     for part, charset in parts:
-        if isinstance(part, bytes):
+        if not isinstance(part, bytes):
+            decoded.append(str(part))
+            continue
+        try:
             decoded.append(part.decode(charset or "utf-8", errors="replace"))
-        else:
-            decoded.append(part)
+        except (LookupError, UnicodeError):
+            decoded.append(part.decode("utf-8", errors="replace"))
     return "".join(decoded)
 
 
@@ -145,10 +192,18 @@ def extract_codes(text: str) -> list[str]:
     return [n for n in dict.fromkeys(near) if _plausible_code(n)]
 
 
+# 原来是 `<(script|style).*?>.*?</\1>` —— 两个惰性量词加反向引用，
+# 遇到没有闭合标签的正文会灾难性回溯：实测 24KB 输入耗时数分钟，
+# 而 PREVIEW_BYTES 正好是 24576，一封构造的邮件就能占满一个 CPU 核。
+# 拆成两条无反向引用、且以 \Z 兜底保证终止的模式。
+_SCRIPT_RE = re.compile(r"(?is)<script\b[^>]*>.*?(?:</script\s*>|\Z)")
+_STYLE_RE = re.compile(r"(?is)<style\b[^>]*>.*?(?:</style\s*>|\Z)")
+
+
 def _strip_html(html: str) -> str:
     if not html:
         return ""
-    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
+    text = _STYLE_RE.sub(" ", _SCRIPT_RE.sub(" ", html))
     text = re.sub(r"(?i)<br\s*/?>", "\n", text)
     text = re.sub(r"(?i)</p>", "\n", text)
     text = re.sub(r"(?s)<[^>]+>", " ", text)
@@ -220,29 +275,29 @@ def fetch_attachment(
     account: dict[str, Any], uid: str, index: int
 ) -> tuple[dict[str, Any] | None, str | None]:
     """按 walk() 序号取出单个附件的原始字节。"""
-    imap, new_refresh, err = get_imap_connection(account)
-    if err or not imap:
-        return None, err or "连接失败"
-    try:
-        imap.select("INBOX", readonly=True)
-        status, msg_data = imap.uid("fetch", uid.encode(), "(RFC822)")
-        if status != "OK" or not msg_data or not msg_data[0]:
-            return None, "邮件不存在"
-        msg = email_lib.message_from_bytes(msg_data[0][1])
-        for i, part in enumerate(msg.walk()):
-            if i != index:
-                continue
-            if part.get_content_maintype() == "multipart":
-                return None, "该位置不是附件"
-            filename = decode_mime_header(part.get_filename() or "") or f"attachment-{i}"
-            return {
-                "filename": filename,
-                "content_type": part.get_content_type(),
-                "data": part.get_payload(decode=True) or b"",
-            }, None
-        return None, "附件不存在"
-    except Exception as e:
-        return None, str(e)
+    with imap_session(account) as (imap, new_refresh, err):
+        if err or not imap:
+            return None, err or "连接失败"
+        try:
+            imap.select("INBOX", readonly=True)
+            status, msg_data = imap.uid("fetch", uid.encode(), "(RFC822)")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                return None, "邮件不存在"
+            msg = email_lib.message_from_bytes(msg_data[0][1])
+            for i, part in enumerate(msg.walk()):
+                if i != index:
+                    continue
+                if part.get_content_maintype() == "multipart":
+                    return None, "该位置不是附件"
+                filename = decode_mime_header(part.get_filename() or "") or f"attachment-{i}"
+                return {
+                    "filename": filename,
+                    "content_type": part.get_content_type(),
+                    "data": part.get_payload(decode=True) or b"",
+                }, None
+            return None, "附件不存在"
+        except Exception as e:
+            return None, str(e)
 
 
 def _new_refresh(account: dict[str, Any]) -> str | None:
@@ -251,16 +306,16 @@ def _new_refresh(account: dict[str, Any]) -> str | None:
 
 
 def probe_account(account: dict[str, Any]) -> dict[str, Any]:
-    imap, new_refresh, err = get_imap_connection(account)
-    if err or not imap:
-        return {"ok": False, "error": err or "unknown", "refresh_token": new_refresh}
-    try:
-        status, _ = imap.select("INBOX", readonly=True)
-        if status != "OK":
-            return {"ok": False, "error": "select_failed", "refresh_token": new_refresh}
-        return {"ok": True, "error": "", "refresh_token": new_refresh}
-    except Exception as e:
-        return {"ok": False, "error": f"probe_failed: {e}", "refresh_token": new_refresh}
+    with imap_session(account) as (imap, new_refresh, err):
+        if err or not imap:
+            return {"ok": False, "error": err or "unknown", "refresh_token": new_refresh}
+        try:
+            status, _ = imap.select("INBOX", readonly=True)
+            if status != "OK":
+                return {"ok": False, "error": "select_failed", "refresh_token": new_refresh}
+            return {"ok": True, "error": "", "refresh_token": new_refresh}
+        except Exception as e:
+            return {"ok": False, "error": f"probe_failed: {e}", "refresh_token": new_refresh}
 
 
 def _imap_safe(value: str) -> str:
@@ -321,11 +376,16 @@ def _search_uids(imap, account_id: int, criteria: str) -> list[bytes] | None:
     uids.reverse()
     with _lock:
         _search_cache[key] = (uids, now)
-        # 缓存只是加速翻页，不需要长期保留
+        # 先按 TTL 清，若仍超限再按时间淘汰最老的 ——
+        # 只按 TTL 清的话，一分钟内涌入 200 个不同搜索词就再也清不掉了，
+        # 而 criteria 含用户可控的搜索串，键空间无界
         if len(_search_cache) > 200:
             for k, (_, ts) in list(_search_cache.items()):
                 if now - ts > SEARCH_TTL:
                     _search_cache.pop(k, None)
+            while len(_search_cache) > 200:
+                oldest = min(_search_cache, key=lambda k: _search_cache[k][1])
+                _search_cache.pop(oldest, None)
     return uids
 
 
@@ -340,10 +400,12 @@ def _parse_fetch(msg_data) -> list[dict[str, Any]]:
     """
     out: list[dict[str, Any]] = []
     current_parts: list[tuple] = []
-    for item in msg_data:
-        if isinstance(item, tuple):
-            current_parts.append(item)
-        elif item == b")" and current_parts:
+
+    def flush() -> None:
+        nonlocal current_parts
+        if not current_parts:
+            return
+        try:
             uid_str = None
             raw = b""
             for part in current_parts:
@@ -370,7 +432,21 @@ def _parse_fetch(msg_data) -> list[dict[str, Any]]:
                         "codes": extract_codes(subject + " " + readable),
                     }
                 )
+        except Exception as e:
+            # 单封坏邮件不能拖垮整页 —— 此前一封畸形邮件会让收件箱永久 500
+            log.warning("跳过无法解析的邮件: %s", e)
+        finally:
             current_parts = []
+
+    for item in msg_data:
+        if isinstance(item, tuple):
+            current_parts.append(item)
+        else:
+            # 任何非 tuple 项都作为一封邮件的收尾。
+            # 原来是 `item == b")"` 严格相等 —— 服务端在字面量后追加
+            # FLAGS/MODSEQ 时收尾项形如 b" FLAGS (\\Seen))"，整封邮件会被默默丢掉。
+            flush()
+    flush()  # 末尾没有收尾项时兜底
     out.sort(key=lambda m: int(m["uid"]), reverse=True)
     return out
 
@@ -397,119 +473,122 @@ def fetch_messages(
     search: str | None = None,
     search_field: str = "subject",
 ) -> tuple[dict[str, Any], str | None]:
-    imap, new_refresh, err = get_imap_connection(account)
-    if err or not imap:
-        return {"error": err or "连接失败", "code": "imap_error"}, None
+    with imap_session(account) as (imap, new_refresh, err):
+        if err or not imap:
+            return {"error": err or "连接失败", "code": "imap_error"}, None
 
-    new_refresh = new_refresh or _new_refresh(account)
-    page = max(1, page)
-    per_page = min(max(1, per_page), 50)
+        new_refresh = new_refresh or _new_refresh(account)
+        page = max(1, page)
+        per_page = min(max(1, per_page), 50)
 
-    try:
-        imap.select("INBOX", readonly=True)
-        criteria = _build_criteria(filter_to, (search or "").strip() or None, search_field)
-        all_uids = _search_uids(imap, account["id"], criteria)
-        if all_uids is None:
-            return {"error": "搜索邮件失败", "code": "search_failed"}, new_refresh
+        try:
+            imap.select("INBOX", readonly=True)
+            criteria = _build_criteria(filter_to, (search or "").strip() or None, search_field)
+            all_uids = _search_uids(imap, account["id"], criteria)
+            if all_uids is None:
+                return {"error": "搜索邮件失败", "code": "search_failed"}, new_refresh
 
-        total = len(all_uids)
-        term = (search or "").strip()
-        # 非 ASCII 关键词服务端搜不了，退回本地过滤
-        local_term = term if term and not _searchable_on_server(term) else ""
+            total = len(all_uids)
+            term = (search or "").strip()
+            # 非 ASCII 关键词服务端搜不了，退回本地过滤
+            local_term = term if term and not _searchable_on_server(term) else ""
 
-        if not codes_only and not local_term:
+            if not codes_only and not local_term:
+                start = (page - 1) * per_page
+                page_uids = all_uids[start : start + per_page]
+                messages = _fetch_chunk(imap, page_uids)
+                if messages is None:
+                    return {"error": "拉取邮件失败", "code": "fetch_failed"}, new_refresh
+                return {
+                    "messages": messages,
+                    "total": total,
+                    "page": page,
+                    "per_page": per_page,
+                    "total_pages": (total + per_page - 1) // per_page,
+                }, new_refresh
+
+            # 需要看正文才能判定的过滤（验证码 / 非 ASCII 关键词），
+            # 服务端无法预先算出总页数：从头滚动扫描，凑够 page*per_page 条后切片，扫描量封顶。
+            needle = local_term.lower()
+
+            def keep(m: dict[str, Any]) -> bool:
+                if codes_only and not m["codes"]:
+                    return False
+                if not needle:
+                    return True
+                if search_field == "from":
+                    return needle in (m["from"] or "").lower()
+                if search_field == "text":
+                    return needle in ((m["subject"] or "") + " " + (m["body_preview"] or "")).lower()
+                return needle in (m["subject"] or "").lower()
+
+            wanted = page * per_page
+            matched: list[dict[str, Any]] = []
+            scanned = 0
+            chunk = per_page * 4
+            while scanned < len(all_uids) and len(matched) <= wanted and scanned < CODES_SCAN_CAP:
+                batch = all_uids[scanned : scanned + chunk]
+                rows = _fetch_chunk(imap, batch)
+                if rows is None:
+                    return {"error": "拉取邮件失败", "code": "fetch_failed"}, new_refresh
+                matched.extend(r for r in rows if keep(r))
+                scanned += len(batch)
+
             start = (page - 1) * per_page
-            page_uids = all_uids[start : start + per_page]
-            messages = _fetch_chunk(imap, page_uids)
-            if messages is None:
-                return {"error": "拉取邮件失败", "code": "fetch_failed"}, new_refresh
+            window = matched[start : start + per_page]
+            capped = scanned >= CODES_SCAN_CAP and scanned < len(all_uids)
             return {
-                "messages": messages,
+                "messages": window,
                 "total": total,
                 "page": page,
                 "per_page": per_page,
-                "total_pages": (total + per_page - 1) // per_page,
+                # 过滤后的总数未知，用 has_more 驱动前端翻页。
+                # 扫描被封顶时后面还有没看过的邮件，不能报"没有更多"，
+                # 否则用户会以为验证码不存在。
+                "has_more": len(matched) > start + per_page or capped,
+                "total_pages": None,
+                "scanned": scanned,
+                "scan_capped": capped,
+                # 前端据此提示：该关键词是本地过滤的，只覆盖已扫描范围
+                "local_filter": bool(local_term),
             }, new_refresh
-
-        # 需要看正文才能判定的过滤（验证码 / 非 ASCII 关键词），
-        # 服务端无法预先算出总页数：从头滚动扫描，凑够 page*per_page 条后切片，扫描量封顶。
-        needle = local_term.lower()
-
-        def keep(m: dict[str, Any]) -> bool:
-            if codes_only and not m["codes"]:
-                return False
-            if not needle:
-                return True
-            if search_field == "from":
-                return needle in (m["from"] or "").lower()
-            if search_field == "text":
-                return needle in ((m["subject"] or "") + " " + (m["body_preview"] or "")).lower()
-            return needle in (m["subject"] or "").lower()
-
-        wanted = page * per_page
-        matched: list[dict[str, Any]] = []
-        scanned = 0
-        chunk = per_page * 4
-        while scanned < len(all_uids) and len(matched) <= wanted and scanned < CODES_SCAN_CAP:
-            batch = all_uids[scanned : scanned + chunk]
-            rows = _fetch_chunk(imap, batch)
-            if rows is None:
-                return {"error": "拉取邮件失败", "code": "fetch_failed"}, new_refresh
-            matched.extend(r for r in rows if keep(r))
-            scanned += len(batch)
-
-        start = (page - 1) * per_page
-        window = matched[start : start + per_page]
-        return {
-            "messages": window,
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            # 过滤后的总数未知，用 has_more 驱动前端翻页
-            "total_pages": None,
-            "has_more": len(matched) > start + per_page,
-            "scanned": scanned,
-            "scan_capped": scanned >= CODES_SCAN_CAP and scanned < len(all_uids),
-            # 前端据此提示：该关键词是本地过滤的，只覆盖已扫描范围
-            "local_filter": bool(local_term),
-        }, new_refresh
-    except Exception as e:
-        return {"error": str(e), "code": "fetch_error"}, new_refresh
+        except Exception as e:
+            return {"error": str(e), "code": "fetch_error"}, new_refresh
 
 
 def fetch_single_message(account: dict[str, Any], uid: str) -> tuple[dict[str, Any], str | None]:
-    imap, new_refresh, err = get_imap_connection(account)
-    if err or not imap:
-        return {"error": err or "连接失败", "code": "imap_error"}, None
+    with imap_session(account) as (imap, new_refresh, err):
+        if err or not imap:
+            return {"error": err or "连接失败", "code": "imap_error"}, None
 
-    new_refresh = new_refresh or _new_refresh(account)
-    try:
-        imap.select("INBOX", readonly=True)
-        status, msg_data = imap.uid("fetch", uid.encode(), "(RFC822)")
-        if status != "OK" or not msg_data or not msg_data[0]:
-            return {"error": "邮件不存在", "code": "not_found"}, new_refresh
+        new_refresh = new_refresh or _new_refresh(account)
+        try:
+            imap.select("INBOX", readonly=True)
+            status, msg_data = imap.uid("fetch", uid.encode(), "(RFC822)")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                return {"error": "邮件不存在", "code": "not_found"}, new_refresh
 
-        raw_email = msg_data[0][1]
-        msg = email_lib.message_from_bytes(raw_email)
-        subject = decode_mime_header(msg.get("Subject", ""))
-        sender = decode_mime_header(msg.get("From", ""))
-        to = decode_mime_header(msg.get("To", ""))
-        date_str = msg.get("Date", "")
+            raw_email = msg_data[0][1]
+            msg = email_lib.message_from_bytes(raw_email)
+            subject = decode_mime_header(msg.get("Subject", ""))
+            sender = decode_mime_header(msg.get("From", ""))
+            to = decode_mime_header(msg.get("To", ""))
+            date_str = msg.get("Date", "")
 
-        html_body, text_body, attachments = _extract_bodies(msg)
-        body = html_body or text_body
-        codes = extract_codes(subject + " " + text_body + " " + _strip_html(html_body))
-        return {
-            "uid": uid,
-            "subject": subject,
-            "from": sender,
-            "to": to,
-            "date": date_str,
-            "body": body,
-            "text_body": text_body,
-            "is_html": bool(html_body),
-            "codes": codes,
-            "attachments": attachments,
-        }, new_refresh
-    except Exception as e:
-        return {"error": str(e), "code": "fetch_error"}, new_refresh
+            html_body, text_body, attachments = _extract_bodies(msg)
+            body = html_body or text_body
+            codes = extract_codes(subject + " " + text_body + " " + _strip_html(html_body))
+            return {
+                "uid": uid,
+                "subject": subject,
+                "from": sender,
+                "to": to,
+                "date": date_str,
+                "body": body,
+                "text_body": text_body,
+                "is_html": bool(html_body),
+                "codes": codes,
+                "attachments": attachments,
+            }, new_refresh
+        except Exception as e:
+            return {"error": str(e), "code": "fetch_error"}, new_refresh

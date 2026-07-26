@@ -65,7 +65,7 @@ def get_messages(
     _check_rate(key["id"])
     db.touch_api_key(key["id"], email)
 
-    messages, err = code_service.fetch_recent(email)
+    messages, err, resolved = code_service.fetch_recent(email)
     if err:
         raise HTTPException(404 if err == "邮箱不存在" else 502, err)
-    return {"email": email, "messages": (messages or [])[:limit]}
+    return {"email": resolved or email, "messages": (messages or [])[:limit]}
