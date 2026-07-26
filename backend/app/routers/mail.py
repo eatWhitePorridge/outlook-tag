@@ -1,8 +1,8 @@
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 
-from app import db
+from app import db, ratelimit
 from app.auth import issue_public_token, require_admin, require_admin_or_public_account
 from app.schemas import LookupBody
 from app.services import mail as mail_service
@@ -47,7 +47,16 @@ def _guard_alias(access: dict, headers: dict) -> None:
 
 
 @router.post("/lookup")
-def lookup(body: LookupBody):
+def lookup(body: LookupBody, request: Request):
+    # 未鉴权接口，且存在即 200 / 不存在即 404 —— 是个可枚举的 oracle。
+    # 限流不能消除这个性质，但能把批量枚举的成本抬上去。
+    ratelimit.check(
+        "lookup",
+        ratelimit.client_ip(request),
+        limit=30,
+        window=60,
+        detail="查询过于频繁，请稍后再试",
+    )
     email_addr = body.email.strip()
     if not email_addr:
         raise HTTPException(400, "请输入邮箱地址")
@@ -101,7 +110,7 @@ def list_messages(
 @router.get("/accounts/{account_id}/messages/{uid}")
 def message_detail(
     account_id: int,
-    uid: str,
+    uid: str = Path(pattern=r"^\d+$"),
     access: dict = Depends(require_admin_or_public_account),
 ):
     account = _load_secrets(account_id)
@@ -117,8 +126,8 @@ def message_detail(
 @router.get("/accounts/{account_id}/messages/{uid}/attachments/{index}")
 def download_attachment(
     account_id: int,
-    uid: str,
     index: int,
+    uid: str = Path(pattern=r"^\d+$"),
     access: dict = Depends(require_admin_or_public_account),
 ):
     """附件下载。走与读信同一套鉴权，并同样校验别名边界。"""

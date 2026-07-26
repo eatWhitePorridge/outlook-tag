@@ -30,9 +30,17 @@ def verify_admin_password(password: str, settings: Settings | None = None) -> bo
     return hmac.compare_digest(password.encode("utf-8"), settings.admin_password.encode("utf-8"))
 
 
+def _password_epoch(settings: Settings) -> str:
+    """密码指纹。写进会话后，改了 ADMIN_PASSWORD 就能让旧 Cookie 立刻失效
+    —— 此前只有换 SECRET_KEY 才能吊销，而会话有效期是 7 天。"""
+    return hashlib.sha256(settings.admin_password.encode("utf-8")).hexdigest()[:16]
+
+
 def set_admin_session(response: Response, settings: Settings | None = None) -> None:
     settings = settings or get_settings()
-    token = _serializer(settings).dumps({"role": "admin", "n": secrets.token_hex(8)})
+    token = _serializer(settings).dumps(
+        {"role": "admin", "pw": _password_epoch(settings), "n": secrets.token_hex(8)}
+    )
     response.set_cookie(
         ADMIN_COOKIE,
         token,
@@ -68,6 +76,8 @@ def require_admin(
         raise HTTPException(status_code=401, detail="无效会话")
     if data.get("role") != "admin":
         raise HTTPException(status_code=401, detail="无效会话")
+    if data.get("pw") != _password_epoch(settings):
+        raise HTTPException(status_code=401, detail="管理密码已变更，请重新登录")
     return data
 
 
@@ -114,7 +124,7 @@ def require_admin_or_public_account(
     if mail_admin:
         try:
             data = _serializer(settings).loads(mail_admin, max_age=settings.session_ttl)
-            if data.get("role") == "admin":
+            if data.get("role") == "admin" and data.get("pw") == _password_epoch(settings):
                 return {"role": "admin", "account_id": account_id, "filter_to": None}
         except (SignatureExpired, BadSignature):
             pass
@@ -148,9 +158,10 @@ def require_api_key(
     if not x_api_key:
         raise HTTPException(status_code=401, detail="缺少 API Key（请求头 X-API-Key）")
 
+    # 行本身就是按这个哈希查出来的，再 compare_digest 一次恒为真（原来那句是死代码）。
+    # 这里也不需要防时序：查询键是 sha256(token_urlsafe(32))，攻击者无法逐位试探。
     row = db.get_api_key_by_hash(hash_api_key(x_api_key.strip()))
-    # 即使查不到也走一次比较，避免用响应时间区分「不存在」与「已停用」
-    if not row or not hmac.compare_digest(row["key_hash"], hash_api_key(x_api_key.strip())):
+    if not row:
         raise HTTPException(status_code=401, detail="无效的 API Key")
     if not row["enabled"]:
         raise HTTPException(status_code=401, detail="该 API Key 已停用")

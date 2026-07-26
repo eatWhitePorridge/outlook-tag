@@ -48,6 +48,10 @@
       selectedUid = null
       messages = []
       page = 1
+      // 这三个不重置会让新账号短暂显示上一个账号的条数与翻页状态
+      total = 0
+      totalPages = 0
+      hasMore = null
       if (id) {
         loadAliases()
         loadMessages(1)

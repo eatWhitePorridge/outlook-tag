@@ -52,7 +52,16 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        # allow_origins=["*"] 配合 allow_credentials=True 时，Starlette 会
+        # 回显调用方的 Origin —— 任意站点都能带着管理 Cookie 驱动后台接口。
+        # 直接拒绝，而不是留个安静的脚枪。
+        if "*" in origins:
+            raise ValueError(
+                "CORS_ORIGINS 不能为 *（会与 Cookie 凭据一起构成 CSRF 通道）；"
+                "同域部署请留空，跨域请写明确的来源"
+            )
+        return origins
 
 
 @lru_cache

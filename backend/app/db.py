@@ -248,8 +248,12 @@ def get_account(account_id: int, secrets: bool = False) -> dict[str, Any] | None
 
 
 def get_account_by_email(email: str) -> dict[str, Any] | None:
+    # 邮箱按惯例大小写不敏感。用 COLLATE NOCASE 而不是改列定义，
+    # 避免为此做一次表迁移（已有数据大小写混杂）。
     with db_cursor() as cur:
-        row = cur.execute("SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
+        row = cur.execute(
+            "SELECT * FROM accounts WHERE email = ? COLLATE NOCASE", (email,)
+        ).fetchone()
     return _row(row)
 
 
@@ -260,7 +264,7 @@ def get_account_by_alias(alias: str) -> dict[str, Any] | None:
             SELECT a.*, al.alias, al.tag
             FROM aliases al
             JOIN accounts a ON al.account_id = a.id
-            WHERE al.alias = ?
+            WHERE al.alias = ? COLLATE NOCASE
             """,
             (alias,),
         ).fetchone()

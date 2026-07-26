@@ -23,16 +23,21 @@ def probe_one_account(account_id: int) -> dict[str, Any]:
         return {"id": account_id, "ok": False, "error": "账号不存在"}
     r = mail_service.probe_account(full)
     now = _utc_now()
-    if r["ok"]:
-        db.update_account(account_id, status="ok", last_checked_at=now, last_error="")
-    else:
-        db.update_account(
-            account_id,
-            status="error",
-            last_checked_at=now,
-            last_error=(r.get("error") or "")[:500],
-        )
-    _maybe_refresh(account_id, full, r.get("refresh_token"))
+    fields: dict[str, Any] = (
+        {"status": "ok", "last_checked_at": now, "last_error": ""}
+        if r["ok"]
+        else {
+            "status": "error",
+            "last_checked_at": now,
+            "last_error": (r.get("error") or "")[:500],
+        }
+    )
+    # 轮换后的 refresh_token 与状态一起写：分两个事务的话，中间崩溃会让
+    # 微软那边已经轮换、库里还留着作废的旧 token，账号直接报废
+    new_refresh = r.get("refresh_token")
+    if new_refresh and new_refresh != full.get("refresh_token"):
+        fields["refresh_token"] = new_refresh
+    db.update_account(account_id, **fields)
     return {
         "id": account_id,
         "email": full["email"],
@@ -65,14 +70,19 @@ def run_probe_batch(
 
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
-        futures = [pool.submit(probe_one_account, it["id"]) for it in items]
+        # 记住 future -> 账号，否则失败时只剩一句无主的错误信息，
+        # 而这个账号的 last_checked_at 也没写成功，会被每轮重复选中
+        futures = {pool.submit(probe_one_account, it["id"]): it for it in items}
         for f in as_completed(futures):
+            it = futures[f]
             try:
                 row = f.result()
                 if row:
                     results.append(row)
             except Exception as e:
-                results.append({"ok": False, "error": str(e)})
+                results.append(
+                    {"id": it["id"], "email": it.get("email", ""), "ok": False, "error": str(e)}
+                )
 
     ok_n = sum(1 for r in results if r.get("ok"))
     err_n = len(results) - ok_n

@@ -129,6 +129,11 @@ def export_accounts(
             id_list = [int(x) for x in ids.split(",") if x.strip()]
         except ValueError:
             raise HTTPException(400, "ids 必须是逗号分隔的整数")
+        # SQLite 的绑定变量上限是 32766，且超大整数会在绑定时抛 OverflowError
+        if len(id_list) > 500:
+            raise HTTPException(400, "一次最多导出 500 个账号")
+        if any(not (0 < i < 2**63) for i in id_list):
+            raise HTTPException(400, "ids 含非法取值")
 
     rows = list(db.iter_accounts_for_export(q=q, status=status, ids=id_list or None))
 
@@ -138,14 +143,20 @@ def export_accounts(
         f"ids={len(id_list) or 'all'} q={q or ''} status={status or 'all'}",
     )
 
+    def safe(v: Any) -> str:
+        """Excel 会把 = + - @ 开头的单元格当公式求值，备注里塞
+        `=cmd|'/c calc'!A1` 就成了打开即执行。前置单引号消除这个语义。"""
+        s = "" if v is None else str(v)
+        return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
     def generate():
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(["email", "password", "client_id", "refresh_token", "note", "status"])
         for r in rows:
             writer.writerow([
-                r["email"], r["password"], r["client_id"],
-                r["refresh_token"], r["note"], r["status"],
+                safe(r["email"]), safe(r["password"]), safe(r["client_id"]),
+                safe(r["refresh_token"]), safe(r["note"]), safe(r["status"]),
             ])
             if buf.tell() > 32768:
                 yield buf.getvalue()

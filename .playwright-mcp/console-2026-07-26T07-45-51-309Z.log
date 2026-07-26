@@ -70,3 +70,5 @@
     at Pa.qn (http://209.38.79.116:8080/assets/index-BM34iXkq.js:1:16585)
 [13729874ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://209.38.79.116:8080/api/auth/me:0
 [13729978ms] [VERBOSE] [DOM] Password forms should have (optionally hidden) username fields for accessibility: (More info: https://goo.gl/9p2vKq) %o @ http://209.38.79.116:8080/admin:0
+[14540898ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://209.38.79.116:8080/api/auth/me:0
+[14541006ms] [VERBOSE] [DOM] Password forms should have (optionally hidden) username fields for accessibility: (More info: https://goo.gl/9p2vKq) %o @ http://209.38.79.116:8080/admin:0

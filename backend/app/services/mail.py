@@ -338,6 +338,23 @@ def _searchable_on_server(value: str) -> bool:
     return value.isascii()
 
 
+def _alias_matches(msg: dict[str, Any], filter_to: str | None) -> bool:
+    """
+    IMAP 的 HEADER To 是子串匹配：搜 tag "test" 会把发给 +test2 的信一并命中，
+    两个别名互相泄露。服务端只能搜到候选，最终边界要在这里收紧。
+
+    只做剔除（服务端已保证候选都含该 tag），所以不会漏掉合法邮件。
+    """
+    if not filter_to or "+" not in filter_to:
+        return True
+    want = filter_to.strip().lower()
+    return want in (msg.get("to") or "").lower()
+
+
+class AliasFilterUnsupported(Exception):
+    """别名无法安全地转成 IMAP 条件。宁可报错也不能退化成不过滤。"""
+
+
 def _build_criteria(filter_to: str | None, search: str | None, search_field: str) -> str:
     """把别名过滤与关键词搜索合成一条 IMAP SEARCH 条件（隐式 AND）。"""
     parts: list[str] = []
@@ -345,8 +362,11 @@ def _build_criteria(filter_to: str | None, search: str | None, search_field: str
         # Outlook IMAP 不支持含 + 号的完整地址搜索，退化为搜 tag 片段
         needle = filter_to.split("+", 1)[1].split("@")[0] if "+" in filter_to else filter_to
         needle = _imap_safe(needle)
-        if needle:
-            parts.append(f'HEADER To "{needle}"')
+        if not needle:
+            # 之前这里会静默跳过，parts 为空则整条退化成 "ALL" ——
+            # 别名边界直接消失，读到同账号其他别名的验证码
+            raise AliasFilterUnsupported(filter_to)
+        parts.append(f'HEADER To "{needle}"')
     if search and _searchable_on_server(search):
         term = _imap_safe(search)
         if term:
@@ -483,7 +503,10 @@ def fetch_messages(
 
         try:
             imap.select("INBOX", readonly=True)
-            criteria = _build_criteria(filter_to, (search or "").strip() or None, search_field)
+            try:
+                criteria = _build_criteria(filter_to, (search or "").strip() or None, search_field)
+            except AliasFilterUnsupported:
+                return {"error": "该别名无法安全过滤，请重建", "code": "bad_alias"}, new_refresh
             all_uids = _search_uids(imap, account["id"], criteria)
             if all_uids is None:
                 return {"error": "搜索邮件失败", "code": "search_failed"}, new_refresh
@@ -499,6 +522,7 @@ def fetch_messages(
                 messages = _fetch_chunk(imap, page_uids)
                 if messages is None:
                     return {"error": "拉取邮件失败", "code": "fetch_failed"}, new_refresh
+                messages = [m for m in messages if _alias_matches(m, filter_to)]
                 return {
                     "messages": messages,
                     "total": total,
@@ -512,6 +536,8 @@ def fetch_messages(
             needle = local_term.lower()
 
             def keep(m: dict[str, Any]) -> bool:
+                if not _alias_matches(m, filter_to):
+                    return False
                 if codes_only and not m["codes"]:
                     return False
                 if not needle:

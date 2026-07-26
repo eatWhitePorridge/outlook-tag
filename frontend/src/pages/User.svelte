@@ -79,6 +79,10 @@
     detail = null
     selectedUid = null
     view = 'list'
+    page = 1
+    total = 0
+    totalPages = 0
+    hasMore = null
     lookupReq.clear()
     listReq.clear()
   }
