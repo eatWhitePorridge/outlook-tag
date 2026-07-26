@@ -27,6 +27,9 @@
 
   const listReq = createRequest()
   const detailReq = createRequest()
+  // 别名必须用独立实例：createRequest 会中止同一实例上的前一个请求，
+  // 而 loadAliases() 与 loadMessages() 是连着发的，共用会让别名列表永远加载不出来。
+  const aliasReq = createRequest()
 
   let index = $derived(messages.findIndex((m) => m.uid === selectedUid))
   let hasPrev = $derived(index > 0)
@@ -71,8 +74,9 @@
 
   async function loadAliases() {
     if (!accountId) return
-    const data = await listReq.run((signal) => api.aliases(accountId, { signal }))
+    const data = await aliasReq.run((signal) => api.aliases(accountId, { signal }))
     if (data) aliases = data
+    else if (aliasReq.error) onerror?.(aliasReq.error)
   }
 
   export async function loadMessages(p = 1) {
